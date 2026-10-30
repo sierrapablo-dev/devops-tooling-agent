@@ -194,13 +194,13 @@ The following Claude Code behaviors affect the boundary between the agent enviro
 | Dependency on Claude Code features that evolve quickly | Document roles and boundaries rather than file formats; verify behavior before relying on it |
 | Non-deterministic model behavior | Enforce security boundaries deterministically, not through instructions alone |
 | Prompt injection through target content or tool output | Treat all external content as untrusted data |
-| Operating on the wrong target repository | Require explicit target selection in every workflow |
+| Operating on the wrong target repository | Require explicit target selection in every workflow, and confirmation of proposed targets ([configuration](configuration.md#32-target-selection)) |
 | Conflicting instructions or conventions from target repositories | Apply the convention precedence rules; verify loading behavior (Section 8.1) |
 | Expanded access when several targets are attached | Attach only the targets required for the task |
 | Duplicating functionality of existing tools in Python | Apply the reuse-before-building principle |
 | Documentation drift between README, project instructions, and this document | Keep this document authoritative and link to it |
 | Limited context when working with large or multiple repositories | Design skills to summarize evidence; use subagents when justified |
-| Different credentials per target or provider | Define the configuration model in issue #6 |
+| Different credentials per target or provider | Keep credentials in native provider mechanisms and refer to them by credential reference ([configuration](configuration.md#6-credentials-and-secret-references)) |
 
 ## 11. Related decisions and issues
 
@@ -209,6 +209,7 @@ Architecture decision records:
 - [ADR-0001: Claude Code as the orchestration engine](adr/0001-claude-code-as-orchestration-engine.md)
 - [ADR-0002: Python as the deterministic integration layer](adr/0002-python-as-deterministic-integration-layer.md)
 - [ADR-0003: Layered security enforcement](adr/0003-layered-security-enforcement.md)
+- [ADR-0004: Session-scoped targets and native provider configuration](adr/0004-session-scoped-targets-and-native-provider-configuration.md)
 
 Agent Foundation issues:
 
@@ -218,5 +219,5 @@ Agent Foundation issues:
 | #3 | Project-level instructions and conventions (`CLAUDE.md`) |
 | #4 | Claude Code environment configuration and structure (`.claude/`) |
 | #5 | Permissions, hooks, and operational safety policies |
-| #6 | Configuration model for target repositories and external providers |
+| #6 | Configuration model for target repositories and external providers ([configuration](configuration.md)) |
 | #7 | Repository analysis skill |

@@ -20,7 +20,7 @@ The following are intentionally absent:
 | `.claude/skills/` | Created together with the first skill. |
 | `.claude/hooks/` | Security hooks are implemented in the Python package ([HG-1](security-policy.md#10-security-hook-requirements)) and only registered in `.claude/settings.json`. |
 | `.claude/rules/`, `CLAUDE.local.md` | `CLAUDE.md` holds the project instructions. Personal instruction files are not versioned. |
-| `.mcp.json`, plugin and provider settings | Defined by the configuration model for targets and providers (issue #6). |
+| `.mcp.json`, plugin and provider settings | No project MCP server or provider configuration exists. Provider authentication stays in native, operator-level mechanisms ([configuration Section 4](configuration.md#4-provider-configuration)). |
 
 ## 2. Conventions
 
@@ -106,7 +106,7 @@ Only managed settings resist these overrides, and they are not available for the
 
 ## 6. Working with target repositories
 
-1. Start Claude Code from the root of this repository and attach each target for the session: `claude --add-dir <target-path>` or `/add-dir <target-path>`. Never add target paths to committed settings.
+1. Start Claude Code from the root of this repository and attach each target for the session: `claude --add-dir <target-path>` or `/add-dir <target-path>`. Never add target paths to committed settings. Attaching a directory does not select it as a target; selection follows [configuration Section 3.2](configuration.md#32-target-selection).
 2. Before attaching a target, list its `.claude/skills/`, `.claude/commands/`, and `.claude/agents/` directories and report any components found. They load into the session and MUST NOT be invoked. Until hook H-4 exists, add a `Skill(<name>)` or `Agent(<name>)` deny rule for each one to `.claude/settings.local.json` for the session.
 3. Do not set `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`. Without it, no instruction file of an attached target is loaded (verified).
 4. Git commands in a target need approval: `cd <target> && git …` prompts by Claude Code's built-in behavior, and `git -C <target> …` matches an ask rule.
