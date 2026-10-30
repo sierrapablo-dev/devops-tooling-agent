@@ -81,6 +81,14 @@ uv build
 - Supply credentials at runtime only. Never write secrets to source code, committed configuration, logs, or pull requests.
 - Use only the access a task requires, and attach only the target repositories it needs.
 
+## Claude Code environment
+
+- The `.claude/` structure, settings, verified behavior, and known gaps are described in [`docs/claude-code-environment.md`](docs/claude-code-environment.md).
+- Start Claude Code from this repository root and attach targets per session with `--add-dir`. Never add target paths to committed settings.
+- Add skills as `.claude/skills/<skill-name>/SKILL.md`. Do not add `.claude/commands/`. Add subagents in `.claude/agents/` only with a documented justification.
+- Skills do not use inline shell execution, and they do not use `allowed-tools` to pre-approve operations outside tier R.
+- Permission prompts for workflow operations are expected. An approved plan does not suppress them, and rules are not relaxed to reduce prompts.
+
 ## Human approval
 
 - Creating branches, committing, pushing, and opening pull requests are allowed only when they are part of an approved task scope.
