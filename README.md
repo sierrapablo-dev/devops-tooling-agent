@@ -119,6 +119,7 @@ devops-tooling-agent/
 ├── .gitattributes
 ├── .gitignore
 ├── .python-version
+├── CLAUDE.md
 ├── pyproject.toml
 ├── uv.lock
 └── README.md
