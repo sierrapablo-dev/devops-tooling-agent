@@ -2,7 +2,7 @@
 
 An extensible DevOps engineering environment powered by [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
 
-**DevOps Tooling Agent** aims to provide a structured, extensible environment for automating DevOps engineering workflows through specialized commands, reusable skills, and deterministic integrations.
+**DevOps Tooling Agent** aims to provide a structured, extensible environment for automating DevOps engineering workflows through reusable skills and deterministic integrations.
 
 Rather than implementing an independent AI agent runtime, the project uses Claude Code as its primary execution engine and conversational interface, while Python provides the integration and automation layer.
 
@@ -11,43 +11,27 @@ Rather than implementing an independent AI agent runtime, the project uses Claud
 ## Goals
 
 - **AI-assisted DevOps workflows:** Use Claude Code to reason about engineering tasks and coordinate workflows.
-- **Structured operations:** Provide reusable commands and skills for common DevOps activities.
+- **Structured operations:** Provide reusable skills for common DevOps activities.
 - **Deterministic integrations:** Implement external service interactions and automation utilities in Python.
 - **Extensibility:** Support additional tools, platforms, and workflows without coupling the project to a specific infrastructure provider.
 - **Human oversight:** Keep sensitive operations and consequential decisions under explicit human control.
 
 ## Architecture
 
-The project follows a separation of responsibilities:
+DevOps Tooling Agent is a centralized Claude Code environment. Claude Code is started from this repository and operates on external target repositories, which do not need to contain or install anything from this project.
 
 | Component | Responsibility |
 |---|---|
-| Claude Code | Conversational interface, reasoning, workflow orchestration, and code execution |
-| Commands | User-facing entry points for specialized workflows |
-| Skills | Reusable domain knowledge, instructions, and procedures |
-| Python package | Deterministic integrations, utilities, and automation |
-| External services | Infrastructure platforms, source control, issue trackers, and other DevOps tools |
+| Claude Code | Reasoning, conversational interface, and workflow orchestration |
+| Project instructions | Global agent conventions and engineering standards |
+| Skills | Reusable capabilities, domain knowledge, and procedures, invoked as slash commands |
+| Subagents | Optional specialist roles, introduced only when justified |
+| Python package | Deterministic execution, integrations, validation, and automation |
+| Target repositories | External repositories the agent works on, treated as untrusted input |
 
-The intended interaction model is:
+Claude Code remains the orchestration engine. Python does not implement a separate agent runtime, use LLM SDKs, or launch Claude Code as a subprocess.
 
-```text
-User
- │
- ▼
-Claude Code
- │
- ├── Commands
- │    └── Skills
- │
- └── Python integrations
-      │
-      ├── GitHub
-      ├── Issue trackers
-      ├── Infrastructure platforms
-      └── Other DevOps tools
-```
-
-Claude Code remains the execution engine. Python does not implement a separate agent runtime or launch Claude Code as a subprocess.
+See [`docs/architecture.md`](docs/architecture.md) for the authoritative architecture description and [`docs/adr/`](docs/adr/README.md) for architecture decision records.
 
 ## Requirements
 
@@ -81,7 +65,7 @@ Start Claude Code from the repository root:
 claude
 ```
 
-> The project is under active development. The command and skill interfaces will become available as their respective components are implemented.
+> The project is under active development. Skills will become available as their respective components are implemented.
 
 ## Development
 
@@ -120,6 +104,12 @@ devops-tooling-agent/
 ├── .github/
 │   └── workflows/
 │       └── ci.yml
+├── docs/
+│   ├── adr/
+│   │   ├── README.md
+│   │   ├── 0001-claude-code-as-orchestration-engine.md
+│   │   └── 0002-python-as-deterministic-integration-layer.md
+│   └── architecture.md
 ├── src/
 │   └── devops_tooling_agent/
 │       ├── __init__.py
@@ -134,7 +124,7 @@ devops-tooling-agent/
 └── README.md
 ```
 
-The structure will evolve as commands, skills, and Python integrations are introduced.
+The structure will evolve as skills and Python integrations are introduced.
 
 ## Planned capabilities
 
