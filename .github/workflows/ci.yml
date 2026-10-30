@@ -46,7 +46,7 @@ jobs:
         run: uv run bandit -r src
 
       - name: Dependency audit
-        run: uv run pip-audit
+        run: uv run pip-audit --skip-editable
 
   tests:
     name: Tests (Python ${{ matrix.python-version }})
