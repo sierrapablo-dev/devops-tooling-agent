@@ -108,8 +108,10 @@ devops-tooling-agent/
 │   ├── adr/
 │   │   ├── README.md
 │   │   ├── 0001-claude-code-as-orchestration-engine.md
-│   │   └── 0002-python-as-deterministic-integration-layer.md
-│   └── architecture.md
+│   │   ├── 0002-python-as-deterministic-integration-layer.md
+│   │   └── 0003-layered-security-enforcement.md
+│   ├── architecture.md
+│   └── security-policy.md
 ├── src/
 │   └── devops_tooling_agent/
 │       ├── __init__.py
