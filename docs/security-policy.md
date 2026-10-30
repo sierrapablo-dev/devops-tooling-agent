@@ -18,7 +18,7 @@ Responsibilities are divided as follows:
 | Claude Code permission rules and settings ([Section 9](#9-required-claude-code-controls)) | This document | Claude Code project configuration (issue #4) |
 | Security hooks ([Section 10](#10-security-hook-requirements)) | This document | A dedicated security hooks issue |
 | Platform controls ([Section 11](#11-platform-controls)) | This document | Operator-managed GitHub and cloud configuration |
-| Provider configuration and secret references | Issue #6 | Issue #6 |
+| Target, provider, and deployment environment configuration; secret references | [`docs/configuration.md`](configuration.md) | Session selection and native provider mechanisms; no configuration files yet |
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are used as described in RFC 2119.
 
@@ -165,7 +165,7 @@ Terraform state files contain secrets in plain text and are credential locations
 ### 6.1 Attachment and access
 
 - Targets are attached explicitly for each session, using `--add-dir` or `/add-dir`, and only when the task requires them.
-- Target paths MUST NOT be stored in committed Claude Code configuration. The configuration model for targets is defined in issue #6.
+- Target paths MUST NOT be stored in committed Claude Code configuration. The configuration model for targets, including explicit target selection, is defined in [`docs/configuration.md`](configuration.md#3-project-configuration).
 - Claude Code MUST be started from this repository, never from inside a target repository. When started inside a target, the target's project settings, hooks, MCP servers, and instructions would apply as the session's own project configuration.
 - Access is limited to the attached directories. Reading outside them is S ([Section 5.1](#51-filesystem)).
 
@@ -205,7 +205,7 @@ Rules:
 
 ### 8.1 Storage and supply
 
-- Credentials are supplied at runtime from an OS credential store, a CLI's own secure storage (such as `gh auth` with the system keyring), or a secret manager. The mechanism and secret references are defined in issue #6.
+- Credentials are supplied at runtime from an OS credential store, a CLI's own secure storage (such as `gh auth` with the system keyring), or a secret manager. Credential references and the limits of this model are defined in [`docs/configuration.md`](configuration.md#6-credentials-and-secret-references).
 - Credentials MUST NOT be stored in source code, committed configuration, documentation, issues, pull requests, commit messages, or logs.
 - Credentials MUST NOT be placed in the `env` block of any Claude Code settings file. Variables in that block are passed to every command the session runs, including target-defined code.
 - Each credential is scoped to the minimum permissions and repositories a task requires, and SHOULD expire.

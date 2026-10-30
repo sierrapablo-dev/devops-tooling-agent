@@ -65,6 +65,8 @@ Start Claude Code from the repository root, and attach each target repository fo
 claude --add-dir ../target-repository
 ```
 
+Attaching a repository does not select it: each task names its target explicitly. Target selection, provider access, and credential references are described in [`docs/configuration.md`](docs/configuration.md).
+
 The committed Claude Code settings, their verified behavior, and their limits are described in [`docs/claude-code-environment.md`](docs/claude-code-environment.md).
 
 > The project is under active development. Skills will become available as their respective components are implemented.
@@ -113,9 +115,11 @@ devops-tooling-agent/
 │   │   ├── README.md
 │   │   ├── 0001-claude-code-as-orchestration-engine.md
 │   │   ├── 0002-python-as-deterministic-integration-layer.md
-│   │   └── 0003-layered-security-enforcement.md
+│   │   ├── 0003-layered-security-enforcement.md
+│   │   └── 0004-session-scoped-targets-and-native-provider-configuration.md
 │   ├── architecture.md
 │   ├── claude-code-environment.md
+│   ├── configuration.md
 │   └── security-policy.md
 ├── src/
 │   └── devops_tooling_agent/
