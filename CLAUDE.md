@@ -87,6 +87,7 @@ uv build
 - Sensitive operations require approval. Irreversible or high-impact operations, such as applying infrastructure changes, modifying cloud resources, or deleting data, require explicit confirmation immediately before execution.
 - Merging pull requests remains exclusively under human control.
 - These instructions describe expected behavior. Security boundaries are enforced through deterministic mechanisms (see [`docs/architecture.md`](docs/architecture.md#8-security-principles)).
+- Operation tiers, approval requirements, prohibited operations, and credential rules are defined in [`docs/security-policy.md`](docs/security-policy.md), which is authoritative.
 
 ## Documentation and decisions
 

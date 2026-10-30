@@ -152,7 +152,7 @@ Python integrations follow these principles:
 
 ## 8. Security principles
 
-These principles define the architectural security boundary. Permissions, settings, hooks, and operational safety policies are specified in issue #5.
+These principles define the architectural security boundary. Operation tiers, permissions, hooks, and operational safety policies are specified in the [security policy](security-policy.md), following [ADR-0003](adr/0003-layered-security-enforcement.md).
 
 1. **Least privilege.** Each session accesses only the target repositories it needs, and each integration uses only the permissions it requires.
 2. **Tiered authorization.**
@@ -170,12 +170,12 @@ These principles define the architectural security boundary. Permissions, settin
 
 The following Claude Code behaviors affect the boundary between the agent environment and target repositories. They are not assumed by this architecture and must be verified before being relied on:
 
-| Verification point | Issue |
-|---|---|
-| Which instruction files (`CLAUDE.md`) are loaded from additional or target directories | #4 |
-| Whether target repository `.claude/` configuration or skills can influence the agent session | #4, #5 |
-| How target repository instructions interact with centralized agent instructions | #4, #5 |
-| How access to target directories is technically granted and restricted | #4, #5 |
+| Verification point | Issue | Status |
+|---|---|---|
+| Which instruction files (`CLAUDE.md`) are loaded from additional or target directories | #4 | Open |
+| Whether target repository `.claude/` configuration or skills can influence the agent session | #4, #5 | Verified for `--add-dir`: skills, commands, and subagents load; settings, hooks, and MCP servers do not ([security policy](security-policy.md#14-verification)) |
+| How target repository instructions interact with centralized agent instructions | #4, #5 | Policy defined ([security policy](security-policy.md#7-untrusted-content-and-prompt-injection)); loading behavior open in #4 |
+| How access to target directories is technically granted and restricted | #4, #5 | Policy defined ([security policy](security-policy.md#61-attachment-and-access)); configuration in #4 |
 
 ## 9. Extensibility principles and conventions
 
@@ -208,6 +208,7 @@ Architecture decision records:
 
 - [ADR-0001: Claude Code as the orchestration engine](adr/0001-claude-code-as-orchestration-engine.md)
 - [ADR-0002: Python as the deterministic integration layer](adr/0002-python-as-deterministic-integration-layer.md)
+- [ADR-0003: Layered security enforcement](adr/0003-layered-security-enforcement.md)
 
 Agent Foundation issues:
 
