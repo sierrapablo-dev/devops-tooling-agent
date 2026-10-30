@@ -8,7 +8,12 @@ This document describes the Claude Code project environment of DevOps Tooling Ag
 
 ```text
 .claude/
-└── settings.json      # Committed project settings: permission rules and security settings
+├── settings.json                 # Committed project settings: permission rules and security settings
+└── skills/
+    └── analyze-repository/       # Read-only, evidence-based analysis of a selected target repository
+        ├── SKILL.md
+        ├── inspection-guide.md
+        └── report-template.md
 ```
 
 The following are intentionally absent:
@@ -17,7 +22,6 @@ The following are intentionally absent:
 |---|---|
 | `.claude/commands/` | No separate commands layer exists ([ADR-0001](adr/0001-claude-code-as-orchestration-engine.md)). Skills are invoked as slash commands. |
 | `.claude/agents/` | No subagent is justified yet ([architecture Section 6.2](architecture.md#62-subagents)). |
-| `.claude/skills/` | Created together with the first skill. |
 | `.claude/hooks/` | Security hooks are implemented in the Python package ([HG-1](security-policy.md#10-security-hook-requirements)) and only registered in `.claude/settings.json`. |
 | `.claude/rules/`, `CLAUDE.local.md` | `CLAUDE.md` holds the project instructions. Personal instruction files are not versioned. |
 | `.mcp.json`, plugin and provider settings | No project MCP server or provider configuration exists. Provider authentication stays in native, operator-level mechanisms ([configuration Section 4](configuration.md#4-provider-configuration)). |
@@ -31,6 +35,7 @@ The following are intentionally absent:
 - Skills that perform mutating operations make their authorization points explicit.
 - Skills do not use inline shell execution (`` !`command` ``). It is disabled by `disableSkillShellExecution`.
 - Skills do not use `allowed-tools` to pre-approve operations outside tier R. Claude Code applies `allowed-tools` without workspace trust and pre-approves those tools for the turn that invokes the skill. Deny and ask rules still apply.
+- The static conventions above are checked by `tests/test_claude_skills.py` for every skill.
 
 ### 2.2 Subagents
 
@@ -107,7 +112,7 @@ Only managed settings resist these overrides, and they are not available for the
 ## 6. Working with target repositories
 
 1. Start Claude Code from the root of this repository and attach each target for the session: `claude --add-dir <target-path>` or `/add-dir <target-path>`. Never add target paths to committed settings. Attaching a directory does not select it as a target; selection follows [configuration Section 3.2](configuration.md#32-target-selection).
-2. Before attaching a target, list its `.claude/skills/`, `.claude/commands/`, and `.claude/agents/` directories and report any components found. They load into the session and MUST NOT be invoked. Until hook H-4 exists, add a `Skill(<name>)` or `Agent(<name>)` deny rule for each one to `.claude/settings.local.json` for the session.
+2. Before attaching a target, list its `.claude/skills/`, `.claude/commands/`, and `.claude/agents/` directories and report any components found. They load into the session and MUST NOT be invoked. Until hook H-4 exists, add a `Skill(<name>)` or `Agent(<name>)` deny rule for each one to `.claude/settings.local.json` for the session. Use the name under which the session lists the component: a target skill whose name is already taken is listed as `<directory-name>:<skill-name>` ([Section 8](#8-verified-behavior)).
 3. Do not set `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`. Without it, no instruction file of an attached target is loaded (verified).
 4. Git commands in a target need approval: `cd <target> && git …` prompts by Claude Code's built-in behavior, and `git -C <target> …` matches an ask rule.
 
@@ -141,8 +146,10 @@ Method:
 | Credential files | See [Section 9.1](#91-credential-access-through-shell-commands). |
 | Bypass mode | Silent fallback described in [Section 5.2](#52-disablebypasspermissionsmode). |
 | Reads outside working directories | `Read`, `Grep`, and `Glob` are refused. `cat` and `Get-Content` require approval. |
+| Symbolic links in attached directories | `Read`, and `Grep` with a single file as its path, follow a link inside an attached directory to a destination outside every working directory without a prompt. `Glob`, including literal patterns, does not return links, and directory-wide `Grep` searches skip linked files and directories. `Read` deny rules are evaluated against the link's destination: a deny rule for the destination blocked reads through a file link and a directory link. Verified with native Windows symbolic links to a harmless marker file. |
 | Instruction files | With `--add-dir`, the target's `CLAUDE.md`, `.claude/rules/`, and nested `CLAUDE.md` were not loaded, including after reading a file in the nested directory. They loaded only with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`. Evidence: `InstructionsLoaded` hook log. |
 | Target skills | Loaded and invocable from `--add-dir`. Inline shell is replaced by `[shell command execution disabled by policy]`. |
+| Skill name collisions | A target skill with the same name as a project skill does not replace it. The target skill is listed as `<directory-name>:<skill-name>`, for example `collision-target:analyze-repository`, and the unprefixed name remains the project skill. Two attached copies of the same skill were listed under both directory names. Target skills and commands with unique names, such as `deploy-helper`, are listed without a prefix. Evidence: the session's `skills` and `slash_commands` lists and the debug log (`project: 1, additional: 2`), with every `Skill` invocation denied, so no skill was invoked. Collisions with user-level or plugin skills were not tested. |
 | Settings validity | `claude doctor` reports no rejected or ambiguous rules. |
 
 ## 9. Known bypasses and gaps
@@ -181,6 +188,7 @@ GitHub is the independent L3 enforcement layer for these paths. The `protect-mai
 
 - `allow` rules for `git fetch`, `git log`, `git show`, and `git diff` would execute programs (`--upload-pack`) or write files (`--output`) if those flags were not ask rules (verified with the allow rules alone). Other option-based execution paths of allowed commands are not known to be covered.
 - Target skills, slash commands, and subagents load from attached directories and their `allowed-tools` apply without trust (RR-4).
+- `blockReadsOutsideWorkingDirectories` does not stop reads through symbolic links inside an attached directory ([Section 8](#8-verified-behavior)). `Read` deny rules, including those for credential locations, still apply to the link's destination. The repository analysis skill reads only paths returned by `Glob`, which does not return links.
 - Commands not covered by any rule are decided by the auto mode classifier.
 
 ## 10. Unverified behavior
@@ -195,6 +203,8 @@ The following are not established and MUST NOT be relied on:
 | Impact of `blockReadsOutsideWorkingDirectories` on auto memory and the session scratchpad | Unverified. Documentation states that files Claude Code needs remain readable; the session scratchpad is outside the working directories. |
 | Loading of a target's `AGENTS.md` | Unverified. The `InstructionsLoaded` hook does not observe `AGENTS.md`. |
 | Absolute program paths (`/usr/bin/git … push`) | A probe was blocked, but the behavior is undocumented and not relied on. |
+| Model invocation when a target skill reuses a project skill name | Unverified. Both skills are listed to the model with their own descriptions, so a target description could attract model invocation. Invocation was not attempted. |
+| `Skill(<directory-name>:<skill-name>)` deny rules | Not verified with the prefixed name. V-8 verified that a `Skill(<name>)` deny rule blocks a target skill. |
 
 ## 11. Re-verification
 
