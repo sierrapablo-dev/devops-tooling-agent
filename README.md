@@ -59,11 +59,13 @@ Install the project and development dependencies:
 uv sync --locked --all-groups
 ```
 
-Start Claude Code from the repository root:
+Start Claude Code from the repository root, and attach each target repository for the session:
 
 ```bash
-claude
+claude --add-dir ../target-repository
 ```
+
+The committed Claude Code settings, their verified behavior, and their limits are described in [`docs/claude-code-environment.md`](docs/claude-code-environment.md).
 
 > The project is under active development. Skills will become available as their respective components are implemented.
 
@@ -101,6 +103,8 @@ uv build
 
 ```text
 devops-tooling-agent/
+├── .claude/
+│   └── settings.json
 ├── .github/
 │   └── workflows/
 │       └── ci.yml
@@ -111,12 +115,14 @@ devops-tooling-agent/
 │   │   ├── 0002-python-as-deterministic-integration-layer.md
 │   │   └── 0003-layered-security-enforcement.md
 │   ├── architecture.md
+│   ├── claude-code-environment.md
 │   └── security-policy.md
 ├── src/
 │   └── devops_tooling_agent/
 │       ├── __init__.py
 │       └── py.typed
 ├── tests/
+│   ├── test_claude_settings.py
 │   └── test_package.py
 ├── .gitattributes
 ├── .gitignore

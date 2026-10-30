@@ -289,6 +289,15 @@ Only read-only commands that do not execute repository-defined code are pre-appr
 
 Native file reading and searching in the agent environment and attached targets need no `allow` rules, except for credential locations, which are denied.
 
+### 9.5 Implementation notes
+
+The committed configuration, its verified behavior, and its known gaps are documented in [`docs/claude-code-environment.md`](claude-code-environment.md). The translation narrows the rules above and never broadens them:
+
+- `Write(path)` rules never match in Claude Code, so file-writing tools are governed by `Edit(path)` rules.
+- Credential patterns that must also cover attached targets are anchored at any absolute path (`//**/`), and Windows equivalents of [Section 8.3](#83-credential-locations) are included.
+- Deny rules take precedence over ask rules, so the `.env.*` deny rule also blocks `.env.example`.
+- Additional deny rules cover pushes to `main` and `master`, MCP tools that write files or refs directly, merge, approval, and ruleset endpoints of `gh api`, and `git show` of credential paths. Additional ask rules cover option forms that change the target or execute programs (`git -C`, `git -c`, `--upload-pack`, `--output`), further wrappers, and further toolchains.
+
 ## 10. Security hook requirements
 
 Security hooks are deterministic `PreToolUse` checks that cover what native permission rules cannot express reliably. They are defense in depth: they reduce the impact of mistakes and prompt injection, but they do not replace platform-level enforcement ([Section 11](#11-platform-controls)).
@@ -354,7 +363,7 @@ The default branch ruleset of this repository is the baseline for agent-managed 
 
 ## 12. Sandbox
 
-Claude Code sandboxing, which restricts the filesystem and network access of shell commands, is not part of the current controls. Until a sandbox has been implemented and validated:
+Claude Code sandboxing, which restricts the filesystem and network access of shell commands, is not part of the current controls. It is available on macOS, Linux, and WSL2, but not on native Windows. Until a sandbox has been implemented and validated:
 
 - Target code execution remains S without exceptions ([Section 5.2](#52-shell-and-code-execution)).
 - S-tier commands run with the operator's user privileges, network access, and any credentials present in the environment.
@@ -367,12 +376,16 @@ Adopting a sandbox requires its own decision record. Only after that may this po
 |---|---|---|---|
 | RR-1 | The agent currently uses the human operator's administrator identity with a classic token that has `repo` scope. It is technically able to merge pull requests, change rulesets, and manage secrets and collaborators. | L1 behavior; L2 rules once implemented | Migrating to the agent identity in [Section 11.1](#111-agent-identity-target-architecture) |
 | RR-2 | Prefix-based permission rules are bypassed by shell wrappers and flag reordering (verified). | Wrappers are `ask` rules | Hooks H-1 to H-3 |
-| RR-3 | `Read` deny rules do not restrict shell commands that read the same files. | L1 behavior | Hook H-6; sandbox |
+| RR-3 | `Read` deny rules restrict Claude's file tools and recognized file commands such as `cat` and `Get-Content`, but not recursive searches, interpreters, Git object reads, .NET file APIs, input redirection in loops, or environment variable expansion (verified, see [environment Section 9.1](claude-code-environment.md#91-credential-access-through-shell-commands)). | Deny rules for recognized commands and for `git show` of credential paths; interpreters and `git grep` are ask rules | Hook H-6 (partial); operating-system isolation such as a sandbox |
 | RR-4 | Target-defined skills, slash commands, and subagents are loaded from attached directories (verified). | Inspection before attaching; per-name `deny` rules | Hook H-4 |
 | RR-5 | Approved target code runs without isolation and with ambient credentials. | S approval; no credentials in settings `env` blocks | Sandbox ([Section 12](#12-sandbox)) |
 | RR-6 | Without required approvals, merge protection depends on the merging identity's permissions. | Human-only merge (L4) | Merge restriction in [Section 11.1](#111-agent-identity-target-architecture) |
-| RR-7 | Behavior of the `PowerShell` tool under permission rules has not been verified. | Rules defined for every shell tool | Verification in issue #4 |
-| RR-8 | Local P operations, such as `--no-verify`, global Git configuration changes, printing environment variables, and download-and-execute pipelines, have no platform-level control. | L1 behavior; L2 deny rules | Hooks H-1 and H-6; sandbox |
+| RR-7 | Behavior of the `PowerShell` tool under permission rules. | Rules defined for every shell tool and verified in issue #4 | Resolved for the verified version ([environment Section 8](claude-code-environment.md#8-verified-behavior)) |
+| RR-8 | Local P operations, such as `--no-verify`, global Git configuration changes, printing environment variables, and download-and-execute pipelines, have no platform-level control. Environment dump commands are denied, but variable expansion such as `echo $NAME` cannot be matched. | L1 behavior; L2 deny rules | Hooks H-1 and H-6; sandbox |
+| RR-9 | Allowed read-only commands can execute programs or write files through options, such as `git fetch --upload-pack` and `git log --output` (verified with the allow rules alone). | Ask rules for the known options | Hook H-1; review of every new allow rule |
+| RR-10 | Project settings can be overridden or dropped: local settings and `--settings` override scalar settings, `--setting-sources` or another working directory drops them, and installed mods can approve denied calls without managed settings. | Platform controls; operator discipline | Managed settings where the account type supports them |
+| RR-11 | Some pushes and remote mutations of protected branches cannot be denied by native rules: pushes without a refspec from the default branch, quoted subcommands, shell wrappers, and REST or GraphQL ref and content updates, which remain ask-only. | Ask rules; GitHub ruleset (L3) | Hooks H-1 to H-3 |
+| RR-12 | `disableBypassPermissionsMode` silently falls back to the configured permission mode instead of rejecting a bypass request, so a refused request is not reported. | Deny and ask rules still apply in the fallback mode | Managed settings |
 
 ## 14. Verification
 
@@ -405,3 +418,21 @@ Limitations:
 - The `PowerShell` tool was not available in the headless sessions, so V-5 to V-7 cover only `Bash` (RR-7).
 - The target's `CLAUDE.md` marker was not reported as loaded. That result comes from the model's own report and is not deterministic evidence, so it is not listed as a check. Instruction file loading is verified in issue #4.
 - Starting Claude Code from inside a target repository was not tested, because this policy prohibits it ([Section 6.1](#61-attachment-and-access)).
+
+### 14.1 Verification of the committed configuration
+
+Issue #4 re-verified the controls on 2026-10-30 with Claude Code 2.1.314 on Windows 11, using the committed `.claude/settings.json` in a clone of this repository, rule subsets passed with `--settings`, and a verifier-created fixture target. The method, detailed results, known bypasses, and unverified behavior are recorded in [`docs/claude-code-environment.md`](claude-code-environment.md#8-verified-behavior).
+
+| # | Check | Result |
+|---|---|---|
+| V-9 | Deny and ask rules from the committed project settings apply in `auto` mode for `Bash` and `PowerShell` | **Yes.** |
+| V-10 | Project `allow` rules apply in `claude -p` sessions | **No.** They require workspace trust. |
+| V-11 | The `PowerShell` tool is available and governed by `PowerShell` rules | **Yes.** |
+| V-12 | Target `CLAUDE.md`, `.claude/rules/`, and nested `CLAUDE.md` files load with `--add-dir` | **No,** unless `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` is set. |
+| V-13 | `Read` deny rules block shell reads of the same files | **Partially** (RR-3). |
+| V-14 | `disableBypassPermissionsMode` rejects `--dangerously-skip-permissions` | **No.** The session silently starts in the configured mode (RR-12). |
+| V-15 | `disableSkillShellExecution` neutralizes inline shell of a target skill | **Yes.** |
+| V-16 | Allowed `git` commands execute programs or write files through options when no ask rule matches | **Yes** (RR-9). |
+| V-17 | Pushes to `main` and `master` are denied without denying pushes to the task branch | **Yes,** for the forms listed in the environment document (RR-11). |
+
+Interactive prompts, interactive MCP behavior, `crossSessionInbound`, and the effect of `blockReadsOutsideWorkingDirectories` on auto memory and the session scratchpad remain unverified.

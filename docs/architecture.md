@@ -172,10 +172,10 @@ The following Claude Code behaviors affect the boundary between the agent enviro
 
 | Verification point | Issue | Status |
 |---|---|---|
-| Which instruction files (`CLAUDE.md`) are loaded from additional or target directories | #4 | Open |
-| Whether target repository `.claude/` configuration or skills can influence the agent session | #4, #5 | Verified for `--add-dir`: skills, commands, and subagents load; settings, hooks, and MCP servers do not ([security policy](security-policy.md#14-verification)) |
-| How target repository instructions interact with centralized agent instructions | #4, #5 | Policy defined ([security policy](security-policy.md#7-untrusted-content-and-prompt-injection)); loading behavior open in #4 |
-| How access to target directories is technically granted and restricted | #4, #5 | Policy defined ([security policy](security-policy.md#61-attachment-and-access)); configuration in #4 |
+| Which instruction files (`CLAUDE.md`) are loaded from additional or target directories | #4 | Verified for `--add-dir`: none by default; `CLAUDE.md` and `.claude/rules/` load only when `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` is set; `AGENTS.md` unverified ([environment](claude-code-environment.md#8-verified-behavior)) |
+| Whether target repository `.claude/` configuration or skills can influence the agent session | #4, #5 | Verified for `--add-dir`: skills, commands, and subagents load; settings, hooks, and MCP servers do not ([security policy](security-policy.md#14-verification)); inline shell of skills is disabled ([environment](claude-code-environment.md#4-settings)) |
+| How target repository instructions interact with centralized agent instructions | #4, #5 | Policy defined ([security policy](security-policy.md#7-untrusted-content-and-prompt-injection)); target instruction files are not loaded by default |
+| How access to target directories is technically granted and restricted | #4, #5 | Configured: targets are attached per session with `--add-dir`, and file tools refuse reads outside working directories ([environment](claude-code-environment.md#6-working-with-target-repositories)) |
 
 ## 9. Extensibility principles and conventions
 
