@@ -69,7 +69,23 @@ Attaching a repository does not select it: each task names its target explicitly
 
 The committed Claude Code settings, their verified behavior, and their limits are described in [`docs/claude-code-environment.md`](docs/claude-code-environment.md).
 
-> The project is under active development. Skills will become available as their respective components are implemented.
+## Skills
+
+Skills are invoked as slash commands or loaded by Claude Code when a request matches them. Every skill operates only on a target that the user names or explicitly confirms.
+
+| Skill | Purpose |
+|---|---|
+| [`/analyze-repository [target-path]`](.claude/skills/analyze-repository/SKILL.md) | Read-only, evidence-based analysis of a target repository: structure, technology stack, dependencies, build and test tooling, CI/CD, infrastructure, documentation, and risks |
+
+For example, after attaching a target:
+
+```text
+/analyze-repository ../target-repository
+```
+
+The analysis never executes target code. The few read-only Git commands it uses prompt for approval, and it continues with file-based evidence if they are declined.
+
+> The project is under active development. Further skills will become available as their respective components are implemented.
 
 ## Development
 
@@ -106,7 +122,12 @@ uv build
 ```text
 devops-tooling-agent/
 ├── .claude/
-│   └── settings.json
+│   ├── settings.json
+│   └── skills/
+│       └── analyze-repository/
+│           ├── SKILL.md
+│           ├── inspection-guide.md
+│           └── report-template.md
 ├── .github/
 │   └── workflows/
 │       └── ci.yml
@@ -127,6 +148,7 @@ devops-tooling-agent/
 │       └── py.typed
 ├── tests/
 │   ├── test_claude_settings.py
+│   ├── test_claude_skills.py
 │   └── test_package.py
 ├── .gitattributes
 ├── .gitignore
