@@ -10,6 +10,7 @@ This directory records significant architectural decisions of DevOps Tooling Age
 | [0002](0002-python-as-deterministic-integration-layer.md) | Python as the deterministic integration layer | Accepted |
 | [0003](0003-layered-security-enforcement.md) | Layered security enforcement | Accepted |
 | [0004](0004-session-scoped-targets-and-native-provider-configuration.md) | Session-scoped targets and native provider configuration | Accepted |
+| [0005](0005-claude-code-version-support-and-re-verification.md) | Claude Code version support and re-verification | Accepted |
 
 ## Conventions
 
