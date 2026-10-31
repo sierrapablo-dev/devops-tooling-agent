@@ -152,6 +152,147 @@ Method:
 | Skill name collisions | A target skill with the same name as a project skill does not replace it. The target skill is listed as `<directory-name>:<skill-name>`, for example `collision-target:analyze-repository`, and the unprefixed name remains the project skill. Two attached copies of the same skill were listed under both directory names. Target skills and commands with unique names, such as `deploy-helper`, are listed without a prefix. Evidence: the session's `skills` and `slash_commands` lists and the debug log (`project: 1, additional: 2`), with every `Skill` invocation denied, so no skill was invoked. Collisions with user-level or plugin skills were not tested. |
 | Settings validity | `claude doctor` reports no rejected or ambiguous rules. |
 
+### 8.1 Remote analysis prerequisites
+
+Verified on 2026-10-31 for the collector-based remote analysis design (#14) with Claude Code 2.1.316, Git 2.49.0.windows.1 with git-lfs 3.6.1, gh 2.92.0, Python 3.13.2, and uv 0.11.19 on Windows 11 Pro 10.0.26300 with PowerShell 7.6.9, using the committed `.claude/settings.json`. No other platform was available. These results record behavior only. They do not decide the acquisition design, which belongs to #15.
+
+Method:
+
+- Probes ran in an interactive session started from this repository, and in headless sessions (`claude -p --permission-prompts none --output-format stream-json --verbose`) started either from a clone of this repository with `--setting-sources project`, or from an empty directory with `--setting-sources local` and a `--settings` file.
+- Fixtures were created by the verifier in the session scratchpad and deleted afterwards:
+  - local bare repositories with a symbolic link, an LFS pointer file, an executable file named `post-checkout` at the root, and a commit without an author email;
+  - marker scripts that only append a fixed string to a file (hooks, templates, fsmonitor, smudge filter, `ext::` command, askpass);
+  - a marker credential helper that reads and discards stdin and records only the operation name;
+  - global configuration files selected with `GIT_CONFIG_GLOBAL`.
+- The operator's global and system Git configuration were not modified. Inherited configuration was inspected by key name, plus the values of `http.sslbackend`, `core.symlinks`, `credential.helper`, and `filter.lfs.process`.
+- Network probes used a private repository provided by the maintainer, a nonexistent repository under the same owner, and `octocat/Hello-World` as a public control.
+- Evidence comes from harness tool results, exit codes, marker files, `GIT_TRACE` files, hook logs, and stream-json transcripts. All captured output, traces, and clone configuration were scanned for GitHub token patterns. The count was 0. Environment variables were checked only for presence or for comparison with a fixed value, and their values were never printed.
+
+#### 8.1.1 Output handling
+
+| Behavior | Status | Method | Result |
+|---|---|---|---|
+| Shell output limit | Verified | Bash commands printing exactly 30,000 and 30,001 characters, and Bash and PowerShell commands printing 20 KB to 2 MB of numbered lines | Up to 30,000 characters are returned inline (threshold measured in Bash). Above that, in both shells, the result shows an "Output too large" notice, the file path, and a 2 KB preview. |
+| Saved output | Verified | Size and tail of the saved files | The complete output is saved to `~/.claude/projects/<project>/<session>/tool-results/<id>.txt`. A 2,000,018-byte output was saved without truncation. |
+| stderr | Verified | Python probe writing stderr lines between flushed stdout blocks | stderr is merged into the same result and saved file, interleaved at flush points. |
+| Line endings | Verified | Byte counts of saved files | Redirected Python stdout on Windows and PowerShell output are saved with CRLF line endings. |
+| `Read` of saved output | Verified | `Read` with `offset` and `limit` on the 2 MB saved file | Readable, although it is outside the working directories. |
+| `Read` size limit | Verified | `Read` without parameters on 500 KB and 2 MB files | Refused above 256 KB, with a message to use `offset` and `limit`. `allow_large` was not exercised on large files. |
+| `Read` long lines | Verified | `Read` of a single 100,093-character line | Lines are not truncated individually. The result is capped at 25,000 tokens: 21,331 characters were returned, with a notice that a single long line cannot be paginated by line. |
+| `Read` long files | Verified | `Read` without parameters on a 2,500-line file, and `offset`/`limit` near the end of a 119,256-line JSON file | All 2,500 lines were returned. The 2,000-line default in the tool description was not observed. Line-structured files page correctly with `offset` and `limit`. |
+| `Read` of a file written by Python | Verified | Python wrote the same 50 KB file to three locations | (a) System temporary directory: refused by `blockReadsOutsideWorkingDirectories`. (b) Session scratchpad: readable. (c) Git-ignored `.cache/` under the agent root: readable, and `git status --ignored` reports it as ignored. |
+
+Transport viability for an evidence document:
+
+| Transport | 50 KB | 500 KB | 2 MB | Constraints and security trade-off |
+|---|---|---|---|---|
+| stdout in one call | Viable through the saved file | Viable through the saved file | Viable through the saved file | Every size above 30,000 characters is saved by Claude Code and must be read back with `Read`. The document must be line-structured: single-line JSON above the 25,000-token cap cannot be paginated. stderr diagnostics are interleaved with stdout. The saved file stays in Claude Code's project data under the user profile, outside the clone lifecycle and outside any cleanup by the collector. |
+| Chunked stdout | Viable | Viable | Viable | Each chunk must stay at or under 30,000 characters to be inline, which takes at least 2, 17, and 67 calls respectively. Each call is a new process, so either the collector clones again for each chunk or it keeps the evidence between calls, which is a file. |
+| File in the system temporary directory | Not viable | Not viable | Not viable | `Read` refuses it. |
+| File in the session scratchpad | Viable | Viable | Viable | Readable. Outside the repository, so it cannot be committed. The scratchpad path is session-specific and is not a stable input for a deterministic tool. |
+| File in a git-ignored directory under the agent root | Viable | Viable | Viable | Readable, and also reachable by `Grep`, `Glob`, and later sessions. Target content can be committed if the ignore rule changes or with `git add -f`, and it persists until deleted. |
+
+#### 8.1.2 Process lifecycle
+
+| Behavior | Status | Method | Result |
+|---|---|---|---|
+| Default timeout | Verified | Bash command without `timeout` | 120 seconds. |
+| Maximum timeout | Partially verified | `timeout: 700000` on a short command | Accepted without error. The documented maximum is 600,000 ms. Clamping was not measured. `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS` are documented configuration variables. They are not set on the operator's machine and were not changed. |
+| Tool timeout | Verified | `lifecycle.py` under `uv run`, with `timeout: 10000` in Bash and in PowerShell | The process is **not terminated**. It is moved to the background and keeps running (heartbeats continued). |
+| `TaskStop` of a background command | Verified | `TaskStop` on the timed-out commands and on a `run_in_background` command, with `uv run python` and with `python` directly | The whole process tree is terminated: Python, the `git` child, and its `sh` grandchild. No `finally`, `atexit`, or signal handler marker was written. |
+| User interrupt (Esc) | Verified | The maintainer pressed Esc during a foreground `uv run python` probe | Same as `TaskStop`: the tree was terminated after 16 seconds, without `finally`, `atexit`, or signal handler markers. |
+| Python cleanup controls | Verified | Normal exit, and `signal.raise_signal` for `SIGINT` and `SIGTERM` | Handlers, `finally`, and `atexit` ran. |
+| Child processes after `Popen.terminate()` | Verified | `finally` called `terminate()` and `wait()` on the `git` child | `C:\Program Files\Git\cmd\git.exe` is a launcher. Terminating it left the real `git.exe` and its `sh.exe` running as orphans that kept writing until they were stopped manually. |
+| Commands left running when Claude Code exits | Not verified | — | Changed in 2.1.316 ([Section 11.1](#111-operating-versions)). Not probed, because the verifying session cannot exit. |
+
+#### 8.1.3 Permission behavior
+
+| Behavior | Status | Method | Result |
+|---|---|---|---|
+| `uv` invocation forms | Verified | Headless session from a clone of this repository, with the committed rules and `--allowedTools Bash PowerShell` | Required approval and were not executed: `uv run python <script>`, `uv run --project <root> python <script>`, `uv --project <root> run …`, `uv.exe run …`, `uv run --project <pkg> <console-script>`, `uvx --from <pkg> <console-script>`, the absolute path of `uv.exe`, the absolute path of a virtual environment's `python.exe`, and `uv run` in PowerShell. |
+| Console-script executable | Verified | The same session, with a throwaway package in the scratchpad | `<venv>\Scripts\<console-script>.exe` invoked directly ran **without approval** in Bash and PowerShell, because no rule matches it. |
+| Subprocesses of an approved Python process | Verified | `git config --global --get <fixture key>` (with `GIT_CONFIG_GLOBAL` pointing to a fixture) and `gh variable list -R <nonexistent>` | Run directly, both were denied in Bash and PowerShell by the existing deny rules. Run as subprocesses of an approved `uv run python` process, both ran: git printed the fixture value, and gh reached the API and received a 404. |
+| Hook visibility | Verified | Headless session from an empty directory with a `PreToolUse` hook on `Bash\|PowerShell` that logs each command | The hook log contained only the two tool calls (the denied `git config` and `python`). The `git` and `gh` subprocesses did not appear. Permission rules and `PreToolUse` hooks, including the future hooks H-1 to H-6, do not see processes started by an approved process. |
+
+#### 8.1.4 Authentication
+
+Each scenario ran with `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`, unless the scenario states otherwise.
+
+| Behavior | Status | Method | Result |
+|---|---|---|---|
+| Inherited system helper | Verified | `git ls-remote` of the private repository without a helper reset | Git Credential Manager from the system configuration ran (`git credential-manager get` in `GIT_TRACE`) and failed fast with "Cannot prompt because user interactivity has been disabled". |
+| GUI prompt control | Verified | The same, with `GCM_INTERACTIVE` unset | GCM opened a dialog. The maintainer cancelled it, and GCM reported "User cancelled dialog" after 9.6 seconds. `GIT_TERMINAL_PROMPT=0` does not prevent GCM dialogs. |
+| URL-scoped helper | Verified | Isolated global fixture with `credential.https://github.com.helper` set to the marker helper, in the shape written by `gh auth setup-git`, without a reset | The marker recorded `get`, and Git failed fast with "terminal prompts disabled". |
+| `gh` helper clone | Verified | `git -c credential.helper= -c "credential.helper=!gh auth git-credential" clone` of the private repository, with and without `GIT_CONFIG_NOSYSTEM=1` | Succeeded without a prompt in 1.5 to 1.8 seconds. `GIT_TRACE` showed only `gh auth git-credential get`, then `store` after success. Neither GCM nor the URL-scoped marker ran. |
+| Nonexistent repository | Verified | The same command for a nonexistent repository | Failed in 0.6 seconds with "Repository not found". `gh` was called with `get` only. No prompt and no `erase`. |
+| Public control | Verified | The same command for `octocat/Hello-World` | Succeeded without any credential helper call, which shows that a public repository does not exercise the helper. |
+| `core.askPass` and `GIT_ASKPASS` | Verified | No helper, marker askpass in `core.askPass` or `GIT_ASKPASS` | Both ran despite `GIT_TERMINAL_PROMPT=0`, once for the username and once for the password. `GIT_ASKPASS` takes precedence over `-c core.askPass=`. |
+| Suppressing askpass | Verified | `-c core.askPass=` with `GIT_ASKPASS` empty, and with `SSH_ASKPASS` set to the marker | No askpass ran, including the `SSH_ASKPASS` fallback, and Git failed fast. |
+| Shell tool environment | Verified | Presence and fixed-value checks | The PowerShell tool environment sets `GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`, and an empty `GIT_ASKPASS`. The Bash tool environment sets none of them. |
+| Clone configuration | Verified | Key names of `.git/config`, URL hosts, and whether URLs contain userinfo | No credential, credential helper, or `extraheader` key. `remote.origin.url` has host `github.com` and no userinfo. The remote remains configured. |
+
+#### 8.1.5 Clone hardening
+
+Local fixtures were cloned through `file://` with `protocol.file.allow=always` where a scenario needed it. LFS was neutralized in scenarios that test another setting, so that each setting is the only variable. Each control scenario left its marker or artifact.
+
+| Setting | Status | Control | Hardened result |
+|---|---|---|---|
+| `core.symlinks=false` | Verified | `core.symlinks=true` created a symbolic link | The link was checked out as a regular file. System configuration already sets `false`. |
+| `core.hooksPath=` (empty) | Verified | A `post-checkout` hook in an inherited `core.hooksPath` ran | No hook ran. `git rev-parse --git-path hooks/post-checkout` resolves to `/post-checkout`, the root of the current drive, so an empty value redirects hook lookup instead of disabling it. `/dev/null` resolves to `/dev/null/post-checkout`, and no hook ran with it either. A hook at the drive root was not planted. |
+| `--template=` (empty) | Verified | An inherited `init.templateDir` copied a marker file and a `post-checkout` hook into `.git`, and the hook ran | Nothing was copied and `.git/hooks` was empty. With an empty `core.hooksPath` alone, the template hook was copied but did not run. |
+| `core.fsmonitor=false` | Verified | An inherited `core.fsmonitor` hook ran during `git status` in the clone, and not during the clone itself | No fsmonitor call. A later `git status` without the option in the hardened clone called the hook again. |
+| LFS smudge disabled | Verified | A marker smudge filter ran for the pointer file | `-c filter.lfs.smudge= -c filter.lfs.process= -c filter.lfs.required=false` checked out the pointer text and ran no filter. `GIT_LFS_SKIP_SMUDGE=1` does not stop a smudge command that is not git-lfs. |
+| System git-lfs | Verified | Clone with the inherited system configuration | git-lfs ran as `filter-process`, failed to download the fixture object, and failed the checkout. It also wrote `pre-push`, `post-checkout`, `post-commit`, and `post-merge` hooks into `.git/hooks`, even with `--template=`. In a hardened clone, a later `git status` without the LFS options ran git-lfs again, and git-lfs wrote `lfs.repositoryformatversion` into the clone's configuration. |
+| `protocol.allow=never`, `protocol.https.allow=always` | Verified | `protocol.ext.allow=always` ran an `ext::` marker command | `file://`, a plain local path, `ext::`, and SSH were refused with "transport '<name>' not allowed". HTTPS worked. |
+| `transfer.fsckObjects=true` | Verified | The malformed commit was cloned without the option | Rejected with "missingEmail" and "fsck error in packed object". A plain local path clone with the option succeeded, because local clones do not transfer a pack. |
+| `insteadOf` detection | Verified | Global fixture rewriting `https://github.com/` | `git ls-remote --get-url` printed the rewritten URL. `GIT_TRACE` showed no transport, and it succeeded with an unreachable proxy, so it needs no network. The hardening options do not neutralize the rewrite: `ls-remote` with all of them still contacted the rewritten host. |
+| Combined hardening | Verified | A global fixture with every marker | Without options, the hooks path, smudge, and fsmonitor markers fired, and the template artifact and a symbolic link were created. With all hardening options and `--template=`, no marker fired and `.git/hooks` was empty. |
+
+#### 8.1.6 Configuration isolation
+
+| Behavior | Status | Method | Result |
+|---|---|---|---|
+| Neutralization | Verified | `GIT_CONFIG_NOSYSTEM=1` with an empty `GIT_CONFIG_GLOBAL` fixture | `git config --list` was empty. No inherited helper, hooks path, template, filter, fsmonitor, or `insteadOf` rewrite applied. Git's built-in sample hooks were still copied. |
+| HTTPS on Windows | Verified | `ls-remote` of the public control and clone of the private repository under isolation | Both succeeded. System configuration sets `http.sslbackend=schannel` and no `http.sslCAInfo`. Under isolation the setting is absent, and the default backend verified `github.com` on this installation. |
+| Proxy settings | Verified | Global fixture with `http.proxy` pointing to an unreachable port, and `HTTPS_PROXY` set to the same port under isolation | The configured proxy is dropped with the file that defines it. The environment proxy still applies under isolation. The operator's configuration defines no proxy, so dropping a real one is not applicable on this machine. |
+
+#### 8.1.7 Cleanup on Windows
+
+| Behavior | Status | Method | Result |
+|---|---|---|---|
+| Read-only Git files | Verified | `shutil.rmtree` on a fresh `--no-local` clone | Failed with `PermissionError` (WinError 5) on the read-only `.idx` file. The `.pack`, `.idx`, and `.rev` files are read-only. The removal was partial. |
+| `onexc` handler | Verified | Handler that clears the read-only attribute and retries | Removed the clone. `onexc` requires Python 3.12. |
+| `onerror` handler | Verified | The same logic with `onerror` | Removed the clone. Available in every supported Python version and deprecated since 3.12. No `DeprecationWarning` was emitted at runtime on 3.13.2. |
+| File held open by another process | Verified | Another process held a worktree file open for 3 seconds | `PermissionError` (WinError 32) after a partial removal. Bounded retries (10 × 0.5 seconds) succeeded on attempt 7 after the file was released. |
+| Lock longer than the retry budget | Verified | The same with a 15-second lock | All retries failed explicitly and the directory remained until the holder ended. |
+| Python 3.12 | Not verified | — | Only Python 3.13.2 is installed. The minimum versions come from the Python documentation. |
+
+#### 8.1.8 Findings for the acquisition design (#15)
+
+Each finding is input for #15. None of them is a decision.
+
+1. **`core.hooksPath` override.** [Security policy Section 5.3](security-policy.md#53-git) classifies overriding `core.hooksPath` to skip hooks as P. Every tested way to keep inherited hooks from running in a clone overrides it, and an empty value resolves hooks at the drive root instead of disabling them. Configuration isolation avoids inherited hooks without overriding the setting, but Git's built-in sample hooks are still copied unless `--template=` is used.
+2. **Subprocesses are invisible to L2.** Permission rules and `PreToolUse` hooks see only the command that Claude runs. Every `git` and `gh` subprocess of an approved Python process runs unevaluated, so hooks H-1 to H-6 cannot control them. Their safety depends on the collector's own fixed arguments.
+3. **Invocation form.** A console-script executable invoked directly matches no rule and is decided by the `auto` mode classifier. The `uv run` forms require approval.
+4. **No cleanup on termination.** Tool timeouts do not terminate the process. `TaskStop` and user interrupts terminate the process tree without running `finally`, `atexit`, or signal handlers. A clone can therefore remain after an interrupted collection. Time limits must be enforced inside the collector.
+5. **Orphaned Git processes.** `Popen.terminate()` on Git for Windows terminates only the launcher. The real `git.exe` and its children keep running and can hold files open in the clone.
+6. **Removal constraints.** `shutil.rmtree` needs a read-only handler on Windows, fails partially on open files, and needs bounded retries and an explicit failure report. Under [security policy Section 5.1](security-policy.md#51-filesystem), the recursive deletion of the clone is X, and writing outside the agent environment is S.
+7. **Transport constraints.**
+   - Output above 30,000 characters is saved by Claude Code under the user profile, which stores target-derived evidence outside the collector's control.
+   - `Read` caps each result at 256 KB and 25,000 tokens, and cannot paginate a single long line.
+   - stderr is interleaved with stdout, and output uses CRLF.
+   - The system temporary directory is not readable.
+8. **Inherited configuration.**
+   - System GCM, the system LFS filter, and URL-scoped helpers run unless they are neutralized.
+   - git-lfs writes hooks into the clone and runs again on later commands.
+   - `-c` options are not persisted, so every later Git command in the clone needs them again or needs isolation.
+   - `insteadOf` rewrites are neutralized only by isolation, and `ls-remote --get-url` detects them without network access.
+9. **Non-interactive behavior.**
+   - `GIT_TERMINAL_PROMPT=0` does not suppress GCM dialogs or askpass programs.
+   - The Bash tool does not set the variables that the PowerShell tool sets, so the collector cannot rely on the calling shell.
+10. **Test fixtures for #17.** A plain local path clone skips `transfer.fsckObjects`, and the protocol restrictions refuse local transports. Tests with local bare repositories need `file://` and an explicit `protocol.file.allow`.
+11. **Clone state after cloning.** The `gh` helper receives `store` after a successful clone. The effect of `store` in `gh` was not observed. `remote.origin.url` remains in the clone configuration until the collector removes it.
+
 ## 9. Known bypasses and gaps
 
 ### 9.1 Credential access through shell commands
@@ -200,7 +341,16 @@ The following are not established and MUST NOT be relied on:
 | MCP behavior in interactive sessions | Partially observed: when the settings loaded into an interactive session, the seven denied GitHub MCP tools were removed from its context. Prompts for `mcp__*` are unverified. The GitHub plugin's MCP server did not connect in `claude -p` sessions. |
 | Ask prompts and allow rules in interactive sessions under `auto` mode | Unverified. Documented behavior is that explicit ask rules always prompt; headless sessions deny instead of prompting. |
 | `crossSessionInbound: "hold"` at runtime | Unverified. The value is accepted by `claude doctor`. |
-| Impact of `blockReadsOutsideWorkingDirectories` on auto memory and the session scratchpad | Unverified. Documentation states that files Claude Code needs remain readable; the session scratchpad is outside the working directories. |
+| Impact of `blockReadsOutsideWorkingDirectories` on auto memory | Unverified. Documentation states that files Claude Code needs remain readable. The session scratchpad and saved tool output are readable ([Section 8.1.1](#811-output-handling)). |
+| Commands left running when Claude Code exits | Unverified. Changed in 2.1.316. Relevant to clones left by an interrupted collection ([Section 8.1.2](#812-process-lifecycle)). |
+| Tool timeouts above 600,000 ms | Unverified. A larger value is accepted without error; whether it is clamped was not measured. |
+| `Read` with `allow_large` on files above 256 KB | Unverified. Not exercised, to keep the session context bounded. |
+| Remote analysis prerequisites on Linux and macOS | Unverified. Only Windows was available. Process termination, cleanup, and Git configuration defaults differ by platform. |
+| `shutil.rmtree` behavior on Python 3.12 | Unverified. Only Python 3.13.2 is installed. `onexc` is documented as available from 3.12. |
+| Execution of a hook at the drive root with an empty `core.hooksPath` | Unverified. The resolved path was verified ([Section 8.1.5](#815-clone-hardening)). Execution was not tested, because it requires writing to the drive root. |
+| Effect of `gh auth git-credential store` and `erase` | Unverified. `store` is called after a successful clone. Whether `gh` persists anything was not observed. |
+| GCM with stored credentials for `github.com` | Unverified. GCM had no usable credential in the probes, so whether it would answer without a dialog was not observed. |
+| Configuration isolation on other Git for Windows installations | Unverified. HTTPS worked under isolation with the `schannel` setting removed on this installation only. |
 | Loading of a target's `AGENTS.md` | Unverified. The `InstructionsLoaded` hook does not observe `AGENTS.md`. |
 | Absolute program paths (`/usr/bin/git … push`) | A probe was blocked, but the behavior is undocumented and not relied on. |
 | Model invocation when a target skill reuses a project skill name | Unverified. Both skills are listed to the model with their own descriptions, so a target description could attract model invocation. Invocation was not attempted. |
