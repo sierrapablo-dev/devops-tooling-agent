@@ -122,7 +122,7 @@ This configuration is more restrictive than the W1 authorization model of the [s
 
 ## 8. Verified behavior
 
-Verified on 2026-10-30 with Claude Code 2.1.314 on Windows 11 with the PowerShell tool enabled.
+Verified on 2026-10-30 with Claude Code 2.1.314 on Windows 11 with the PowerShell tool enabled. Later patch versions accepted without full re-verification are listed in [Section 11](#11-re-verification).
 
 Method:
 
@@ -208,4 +208,35 @@ The following are not established and MUST NOT be relied on:
 
 ## 11. Re-verification
 
-Re-verify [Section 8](#8-verified-behavior) to [Section 10](#10-unverified-behavior) when the supported Claude Code version changes, when `.claude/settings.json` changes, or when a new shell or MCP server is introduced. Use only fixtures created for the verification, keep probes harmless if executed, and run probes that could expose the environment without user settings and with a minimal process environment.
+Supported Claude Code versions and re-verification are defined in [ADR-0005](adr/0005-claude-code-version-support-and-re-verification.md):
+
+- **Minor or major version change:** re-verify [Section 8](#8-verified-behavior) to [Section 10](#10-unverified-behavior) in full. The result establishes a new verified version line.
+- **Patch version change:** review every changelog entry after the most recent operating version, up to and including the new version. Re-verify the rows affected by entries that concern permission rules and their matching, settings and their precedence, shell and file tools, hooks, MCP, skills and subagents, instruction file loading, sandbox, or permission modes. Record the review in the table below. The human maintainer approves its conclusion in the pull request that records it.
+- **Other changes:** re-verify the affected rows when `.claude/settings.json` changes, or when a new shell tool or MCP server is introduced.
+
+A task that depends on verified behavior and runs on a version that is not listed below stops and reports the version.
+
+Use only fixtures created for the verification, keep probes harmless if executed, and run probes that could expose the environment without user settings and with a minimal process environment.
+
+### 11.1 Operating versions
+
+Verified version line: **2.1**.
+
+| Version | Date | Basis | Result |
+|---|---|---|---|
+| 2.1.314 | 2026-10-30 | Full verification ([Section 8](#8-verified-behavior)) | Verified |
+| 2.1.316 | 2026-10-31 | Changelog review | No affected row. Operating version without re-verification. |
+
+Changelog review of 2.1.316:
+
+- Source: `CHANGELOG.md` of the public `anthropics/claude-code` repository on GitHub, read on 2026-10-31. The changelog has no 2.1.315 entry, so the review covers the 55 entries of 2.1.316.
+- Entries that concern the reviewed areas, and why no row is affected:
+  - PowerShell hooks not blocking on exit code 2 for some command forms: no hook is configured ([Section 2.3](#23-hooks)). Relevant to the future hooks of [policy Section 10](security-policy.md#10-security-hook-requirements).
+  - Bash tool handling of aliases, functions, and `SHELLOPTS`, and Git Bash rc files on Windows: command execution, not permission matching.
+  - Shell commands left running after Claude Code exits: process lifecycle. Not covered by Section 8, and in scope of the remote analysis verification (#14).
+  - `--restricted` sessions uploading files outside the working directories: the mode is not used.
+  - `autoMode.allow` lists without `"$defaults"`, and auto mode verdicts and proxies: the project settings define no auto mode rules, and the auto mode classifier is not a security control ([policy Section 3](security-policy.md#3-enforcement-layers)).
+  - Server-managed settings for Team and Enterprise logins: not available for the operator's account type ([Section 5.4](#54-project-settings-are-not-tamper-proof)).
+  - Agent SDK requests loading `CLAUDE.md` outside the working directory: SDK sessions, not `--add-dir` in CLI sessions ([Section 8](#8-verified-behavior), instruction files).
+  - `Grep` and `Glob` hanging on Windows: availability, not access control.
+- The remaining entries concern models, gateways, IDE and cloud integrations, and the user interface.

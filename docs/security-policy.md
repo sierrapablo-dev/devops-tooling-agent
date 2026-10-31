@@ -22,7 +22,7 @@ Responsibilities are divided as follows:
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are used as described in RFC 2119.
 
-The policy is precise enough that the components above can be implemented without new security decisions. Translating a rule into the exact syntax of the supported Claude Code version is an implementation detail, but it MUST NOT broaden the rule's scope. Every translated rule MUST be verified against that version.
+The policy is precise enough that the components above can be implemented without new security decisions. Translating a rule into the exact syntax of the supported Claude Code version is an implementation detail, but it MUST NOT broaden the rule's scope. Every translated rule MUST be verified against that version. Supported versions and the re-verification required when the version changes are defined in [ADR-0005](adr/0005-claude-code-version-support-and-re-verification.md).
 
 ## 2. Threat model
 
@@ -247,7 +247,7 @@ This section specifies the Claude Code configuration that issue #4 implements. R
 | C-5 | Project settings MUST NOT set `permissions.defaultMode` to a mode more permissive than the default. |
 | C-6 | Project settings MUST NOT enable project MCP servers automatically (`enableAllProjectMcpServers` is not `true`). MCP servers are enumerated individually. |
 | C-7 | `allow` rules contain only the entries in [Section 9.4](#94-allow-rules). Operations not covered by `allow`, `ask`, or `deny` rules are decided by the active permission mode, which is not a security control ([Section 3](#3-enforcement-layers)). Every W2, S, X, and P operation MUST therefore be covered by an `ask` or `deny` rule or by a hook. |
-| C-8 | Every rule is verified against the supported Claude Code version as part of the implementation. Rules that cannot be expressed or that do not behave as specified are reported as gaps and covered by [Section 10](#10-security-hook-requirements). |
+| C-8 | Every rule is verified against the supported Claude Code version as part of the implementation. Rules that cannot be expressed or that do not behave as specified are reported as gaps and covered by [Section 10](#10-security-hook-requirements). A minor or major version change requires full re-verification, and a patch version change requires a changelog review and re-verification of the affected rules, as defined in [ADR-0005](adr/0005-claude-code-version-support-and-re-verification.md). |
 
 ### 9.2 Deny rules
 
@@ -386,6 +386,7 @@ Adopting a sandbox requires its own decision record. Only after that may this po
 | RR-10 | Project settings can be overridden or dropped: local settings and `--settings` override scalar settings, `--setting-sources` or another working directory drops them, and installed mods can approve denied calls without managed settings. | Platform controls; operator discipline | Managed settings where the account type supports them |
 | RR-11 | Some pushes and remote mutations of protected branches cannot be denied by native rules: pushes without a refspec from the default branch, quoted subcommands, shell wrappers, and REST or GraphQL ref and content updates, which remain ask-only. | Ask rules; GitHub ruleset (L3) | Hooks H-1 to H-3 |
 | RR-12 | `disableBypassPermissionsMode` silently falls back to the configured permission mode instead of rejecting a bypass request, so a refused request is not reported. | Deny and ask rules still apply in the fallback mode | Managed settings |
+| RR-13 | Claude Code patch releases are accepted after a changelog review, without full re-verification ([ADR-0005](adr/0005-claude-code-version-support-and-re-verification.md)). Behavior changes to permission rules, settings, tools, or hooks that the changelog does not describe are not detected until the next full verification. | Changelog review approved by the human maintainer; re-verification of affected rows; full re-verification on minor and major changes; L3 controls | An automated re-verification suite run on every release |
 
 ## 14. Verification
 
