@@ -38,11 +38,11 @@ See [`docs/architecture.md`](docs/architecture.md) for the authoritative archite
 The development environment requires:
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-- Python 3.12 or later
+- Python 3.12.4 or later
 - [uv](https://docs.astral.sh/uv/)
 - Git
 
-The repository currently pins Python 3.13.2 for local development. CI is intended to validate compatibility with Python 3.12, 3.13, and 3.14.
+The repository currently pins Python 3.13.2 for local development. CI is intended to validate compatibility with Python 3.12, 3.13, and 3.14. Python 3.12.4 is the minimum because earlier versions do not restrict new directories to the current user on Windows, which the package's ephemeral workspaces rely on ([`docs/python-package.md`](docs/python-package.md#45-workspaces)).
 
 ## Getting started
 
@@ -121,7 +121,11 @@ The Python package is invoked as a module from the repository root, and every in
 
 ```bash
 uv run --locked python -I -m devops_tooling_agent repo resolve <owner>/<repo>
+uv run --locked python -I -m devops_tooling_agent workspace sweep
+uv run --locked python -I -m devops_tooling_agent workspace sweep --remove <workspace-name>
 ```
+
+`workspace sweep` lists workspaces that an interrupted invocation left in the system temporary directory. Removing one with `--remove` permanently deletes a local copy of repository data and is confirmed individually ([security policy Section 5.7](docs/security-policy.md#57-python-package-operations)).
 
 ## Project structure
 
@@ -156,28 +160,38 @@ devops-tooling-agent/
 │   └── devops_tooling_agent/
 │       ├── __init__.py
 │       ├── __main__.py
+│       ├── acquire.py
 │       ├── cli.py
 │       ├── constants.py
 │       ├── envelope.py
 │       ├── environment.py
 │       ├── errors.py
 │       ├── gh.py
+│       ├── git.py
 │       ├── identifier.py
+│       ├── interrupts.py
 │       ├── py.typed
 │       ├── resolve.py
-│       └── runner.py
+│       ├── runner.py
+│       ├── sweep.py
+│       └── workspace.py
 ├── tests/
 │   ├── conftest.py
+│   ├── gitfixtures.py
+│   ├── test_acquire.py
 │   ├── test_claude_settings.py
 │   ├── test_claude_skills.py
 │   ├── test_cli.py
 │   ├── test_constants.py
 │   ├── test_environment.py
 │   ├── test_identifier.py
+│   ├── test_interrupts.py
 │   ├── test_invariants.py
 │   ├── test_package.py
 │   ├── test_resolve.py
-│   └── test_runner.py
+│   ├── test_runner.py
+│   ├── test_sweep.py
+│   └── test_workspace.py
 ├── .gitattributes
 ├── .gitignore
 ├── .python-version

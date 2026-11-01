@@ -35,7 +35,7 @@ class ErrorCode(Enum):
         "The repository identifier is not accepted.", ("reason",), EXIT_ERROR
     )
     ENVIRONMENT_ERROR = _Spec(
-        "A required tool is missing or unsupported.",
+        "A prerequisite is missing or unsupported.",
         ("reason", "tool", "minimum_version"),
         EXIT_ERROR,
     )
@@ -46,9 +46,21 @@ class ErrorCode(Enum):
     UNSUPPORTED_REPOSITORY = _Spec(
         "The repository cannot be handled within scope.", ("reason",), EXIT_ERROR
     )
+    LIMIT_EXCEEDED = _Spec(
+        "A hard limit makes the operation impossible.",
+        ("limit", "maximum", "observed"),
+        EXIT_ERROR,
+    )
     TIMEOUT = _Spec("The internal deadline expired.", ("stage",), EXIT_ERROR)
     PROVIDER_ERROR = _Spec(
         "GitHub, the network, or TLS failed.", ("stage", "exit_code"), EXIT_ERROR
+    )
+    UNSAFE_ENVIRONMENT = _Spec("The configuration isolation check failed.", ("check",), EXIT_ERROR)
+    CLEANUP_FAILED = _Spec(
+        "The workspace could not be removed.", ("workspace", "prior_error"), EXIT_ERROR
+    )
+    WORKSPACE_NOT_ELIGIBLE = _Spec(
+        "The workspace named for removal is not eligible.", ("reason",), EXIT_ERROR
     )
     INTERRUPTED = _Spec("The invocation was interrupted by a signal.", ("stage",), EXIT_INTERRUPTED)
     INTERNAL_ERROR = _Spec("An unexpected internal error occurred.", (), EXIT_ERROR)

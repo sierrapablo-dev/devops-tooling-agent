@@ -209,7 +209,7 @@ No internal operation executes target-defined code, changes repository-local con
 #### 5.7.3 Subprocess rules
 
 1. Every argument vector is fully determined by validated inputs and fixed constants. A subcommand never forwards free-form arguments, and no shell or interpreter wrapper is used.
-2. Only `git` and `gh` are executed, plus the process termination mechanism on Windows if it requires a system tool. Executables are resolved once to absolute paths, without searching the current directory.
+2. Only `git` and `gh` are executed, plus the process termination mechanism on Windows if it requires a system tool. Executables are resolved once to absolute paths, without searching the current directory. Git may start its own shell to run the configured `gh` credential helper (rule 9), and no other helper or program is configured. That shell is started by Git, not by the package, and it runs only the fixed helper value ([environment Section 8.1.10](claude-code-environment.md#8110-workspace-lifecycle-and-acquisition-17)).
 3. The environment is built from the allowlist in [Section 5.7.4](#574-subprocess-environment).
 4. Standard input is closed. Output is captured and never forwarded verbatim. No credential value appears in any argument.
 5. Git commands receive the repository location explicitly, and their working directory is never inside the repository data.
@@ -269,8 +269,8 @@ Every other variable is dropped, notably:
 
 Consequences:
 
-- **Authentication.** Authentication uses only the credential storage of `gh`. An operator who authenticates only through `GH_TOKEN` or `GITHUB_TOKEN` receives `AUTH_REQUIRED`. That the allowlist suffices for OS keyring access on Windows is a verification point owned by #17. A missing variable is added through an amendment of this section.
-- **TLS trust variables.** `SSL_CERT_FILE` and `SSL_CERT_DIR` are passed through, because they only select trusted certificates and `gh` needs them behind a TLS-intercepting proxy. Whether Git honors them depends on its TLS backend and is a verification point owned by #17.
+- **Authentication.** Authentication uses only the credential storage of `gh`. An operator who authenticates only through `GH_TOKEN` or `GITHUB_TOKEN` receives `AUTH_REQUIRED`. The allowlist sufficed for OS keyring access by `gh auth status` and by the `gh` credential helper on Windows ([environment Section 8.1.10](claude-code-environment.md#8110-workspace-lifecycle-and-acquisition-17)). A variable that another platform needs is added through an amendment of this section.
+- **TLS trust variables.** `SSL_CERT_FILE` and `SSL_CERT_DIR` are passed through, because they only select trusted certificates and `gh` needs them behind a TLS-intercepting proxy. Whether Git honors them depends on its TLS backend. Under isolation, Git for Windows uses its default `schannel` backend, which trusts the Windows certificate store and ignores both variables ([environment Section 8.1.10](claude-code-environment.md#8110-workspace-lifecycle-and-acquisition-17)). Their effect on Git with other backends, such as OpenSSL on Linux, is not verified.
 - **Dropped Git trust settings.** `GIT_SSL_CAINFO` is dropped with every other `GIT_*` variable, and configuration isolation drops `http.sslCAInfo` and `http.sslBackend` from operator configuration. An operator whose Git trusts a private certificate authority only through those settings gets a TLS failure, reported as `PROVIDER_ERROR`. The package fails closed and never falls back to operator configuration. Supporting such an environment requires an amendment of this section.
 
 #### 5.7.5 Workspaces

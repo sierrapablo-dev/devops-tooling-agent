@@ -55,6 +55,7 @@ def result(
     *,
     timed_out: bool = False,
     stdout_truncated: bool = False,
+    aborted: bool = False,
 ) -> RunResult:
     return RunResult(
         exit_code=exit_code,
@@ -63,6 +64,7 @@ def result(
         timed_out=timed_out,
         stdout_truncated=stdout_truncated,
         stderr_truncated=False,
+        aborted=aborted,
     )
 
 
@@ -79,6 +81,8 @@ class Call:
     cwd: Path
     timeout: float
     max_output_bytes: int
+    watch: Callable[[], bool] | None = None
+    watch_interval: float = 1.0
 
 
 Step = RunResult | BaseException | Callable[[], RunResult]
@@ -99,8 +103,12 @@ class FakeRunner:
         cwd: Path,
         timeout: float,
         max_output_bytes: int,
+        watch: Callable[[], bool] | None = None,
+        watch_interval: float = 1.0,
     ) -> RunResult:
-        self.calls.append(Call(list(argv), dict(env), cwd, timeout, max_output_bytes))
+        self.calls.append(
+            Call(list(argv), dict(env), cwd, timeout, max_output_bytes, watch, watch_interval)
+        )
         if not self.steps:
             raise AssertionError("unexpected subprocess call")
         step = self.steps.pop(0)
