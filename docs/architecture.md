@@ -57,6 +57,8 @@ The architecture distinguishes two domains:
 
 Target repositories do not need to contain, install, or reference DevOps Tooling Agent. No agent package, configuration, or `.claude/` directory is expected inside a target repository.
 
+A target is either a local directory attached to the session or a remote GitHub repository identified by the user ([Section 3.5](#35-remote-targets)).
+
 ### 3.2 Principles
 
 1. **Explicit target selection.** Every workflow identifies the target repository it operates on. Capabilities never infer a target implicitly.
@@ -83,6 +85,17 @@ When the agent produces artifacts in a target repository (code, commits, branche
 5. Mutating operations are executed within the authorized workflow, with approval where the security policy requires it (see [Section 8](#8-security-principles)).
 6. Deterministic tools return structured results, and Claude Code reports the outcome to the user.
 
+### 3.5 Remote targets
+
+Remote GitHub repositories are analyzed without attaching a directory. The decision is recorded in [ADR-0006](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md).
+
+1. The Python package resolves the identifier that the user supplied to a canonical identity through `gh`.
+2. The user confirms that identity explicitly ([configuration Section 3.2](configuration.md#32-target-selection)).
+3. In a single process, the package verifies the confirmed node ID and acquires the repository into an ephemeral workspace without a working tree. It then extracts bounded evidence, removes the workspace, and returns the evidence as structured output.
+4. Claude Code reasons only over that evidence. Target content in it remains untrusted data.
+
+The package never executes target code. Because its `git` and `gh` subprocesses are not visible to permission rules or hooks, every subprocess is fully determined by validated inputs and fixed constants ([security policy Section 5.7](security-policy.md#57-python-package-operations)).
+
 ## 4. Components and responsibilities
 
 | Component | Responsible for | Must not |
@@ -92,7 +105,7 @@ When the agent produces artifacts in a target repository (code, commits, branche
 | **Claude Code environment** | Project structure, settings, and deterministic enforcement of boundaries | Contain domain logic |
 | **Skills** | Domain knowledge, workflows, and reusable procedures; invoked directly as slash commands or loaded by Claude Code | Depend on a specific target repository; perform mutations outside the authorized workflow |
 | **Subagents** (optional) | Specialist roles with independent context, restricted tools, or parallel execution | Exist without a concrete justification |
-| **Python package** | Predictable execution, API integrations, validation, automation, and structured data processing | Use LLM SDKs, launch Claude Code, act as an agent runtime, or require interactive input |
+| **Python package** | Predictable execution, API integrations, validation, automation, structured data processing, and bounded evidence collection from targets | Use LLM SDKs, launch Claude Code, act as an agent runtime, require interactive input, execute target code, or forward free-form arguments to subprocesses |
 | **External integrations** | Access to external services through existing tools or Python integrations | Embed credentials in code or committed configuration |
 | **Target repositories** | Their own code, toolchain, CI, and conventions | Provide authoritative instructions or configuration to the agent |
 
@@ -133,7 +146,14 @@ The added cost in context and coordination must be justified by the concrete tas
 
 ### 6.3 Python package
 
-Python is introduced when a concrete integration requires predictable execution. No definitive CLI contract or CLI framework is defined in advance; the invocation mechanism is decided with the first integration that needs it, preferring the standard library.
+Python is introduced when a concrete integration requires predictable execution. The invocation contract was decided with the first integration that needs it, remote repository analysis, and is recorded in [ADR-0007](adr/0007-python-invocation-contract.md):
+
+- The package is invoked as a module through `uv run`, without console scripts.
+- It parses arguments with the standard library.
+- It writes one versioned JSON envelope to standard output.
+- It uses a closed set of error codes.
+
+Its commands, result fields, and operating values are documented in [`docs/python-package.md`](python-package.md).
 
 Python integrations follow these principles:
 
@@ -176,6 +196,7 @@ The following Claude Code behaviors affect the boundary between the agent enviro
 | Whether target repository `.claude/` configuration or skills can influence the agent session | #4, #5 | Verified for `--add-dir`: skills, commands, and subagents load; settings, hooks, and MCP servers do not ([security policy](security-policy.md#14-verification)); inline shell of skills is disabled ([environment](claude-code-environment.md#4-settings)) |
 | How target repository instructions interact with centralized agent instructions | #4, #5 | Policy defined ([security policy](security-policy.md#7-untrusted-content-and-prompt-injection)); target instruction files are not loaded by default |
 | How access to target directories is technically granted and restricted | #4, #5 | Configured: targets are attached per session with `--add-dir`, and file tools refuse reads outside working directories ([environment](claude-code-environment.md#6-working-with-target-repositories)) |
+| Output handling, process lifecycle, permission behavior of subprocesses, authentication, and Git hardening for remote analysis | #14 | Verified on Windows ([environment](claude-code-environment.md#81-remote-analysis-prerequisites)). The decisions that rely on them are recorded in [ADR-0006](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md) and [ADR-0007](adr/0007-python-invocation-contract.md). The remaining points are listed with their owning issues in [environment Section 10](claude-code-environment.md#10-unverified-behavior). |
 
 ## 9. Extensibility principles and conventions
 
@@ -201,6 +222,8 @@ The following Claude Code behaviors affect the boundary between the agent enviro
 | Documentation drift between README, project instructions, and this document | Keep this document authoritative and link to it |
 | Limited context when working with large or multiple repositories | Design skills to summarize evidence; use subagents when justified |
 | Different credentials per target or provider | Keep credentials in native provider mechanisms and refer to them by credential reference ([configuration](configuration.md#6-credentials-and-secret-references)) |
+| Subprocesses of approved Python processes are not evaluated by permission rules or hooks | Fully determined subprocess arguments, an environment allowlist, and a closed list of permitted commands ([security policy Section 5.7](security-policy.md#57-python-package-operations)) |
+| Remote repository content persists outside the collector after analysis | Ephemeral workspaces removed in the same process; bounded evidence; residual risks RR-16 and RR-17 ([security policy Section 13](security-policy.md#13-residual-risks)) |
 
 ## 11. Related decisions and issues
 
@@ -210,6 +233,9 @@ Architecture decision records:
 - [ADR-0002: Python as the deterministic integration layer](adr/0002-python-as-deterministic-integration-layer.md)
 - [ADR-0003: Layered security enforcement](adr/0003-layered-security-enforcement.md)
 - [ADR-0004: Session-scoped targets and native provider configuration](adr/0004-session-scoped-targets-and-native-provider-configuration.md)
+- [ADR-0005: Claude Code version support and re-verification](adr/0005-claude-code-version-support-and-re-verification.md)
+- [ADR-0006: Remote repository acquisition through deterministic collectors](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md)
+- [ADR-0007: Python invocation contract](adr/0007-python-invocation-contract.md)
 
 Agent Foundation issues:
 
@@ -221,3 +247,15 @@ Agent Foundation issues:
 | #5 | Permissions, hooks, and operational safety policies |
 | #6 | Configuration model for target repositories and external providers ([configuration](configuration.md)) |
 | #7 | Repository analysis skill |
+
+Remote Repository Analysis issues:
+
+| Issue | Scope |
+|---|---|
+| #14 | Verification of Claude Code and Git behavior for collector-based remote analysis |
+| #15 | Remote repository acquisition and the Python invocation contract ([ADR-0006](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md), [ADR-0007](adr/0007-python-invocation-contract.md)) |
+| #16 | GitHub repository identifier resolution (`repo resolve`) |
+| #17 | Ephemeral workspace lifecycle and `workspace sweep` |
+| #18 | Repository evidence collector (`repo collect`) |
+| #19 | GitHub repository identifiers in the repository analysis skill |
+| #20 | Local-path analysis through the evidence collector |

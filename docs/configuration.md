@@ -24,6 +24,7 @@ This document describes the configuration model of DevOps Tooling Agent: how tar
 | Session exceptions, such as deny rules for target-defined components | `.claude/settings.local.json` | No | Session |
 | Attached targets | `--add-dir` or `/add-dir` | No | Session |
 | Selected target | The user's explicit selection or confirmation in the conversation ([Section 3.2](#32-target-selection)) | No | Task |
+| Remote target identity | The canonical identity resolved by the Python package and confirmed by the user ([Section 3.2](#32-target-selection)) | No | Task |
 | Target facts | Derived from repository evidence when needed ([Section 3.3](#33-target-identification)) | No | Not stored |
 | Target conventions | The target repository's own documentation ([Section 3.4](#34-target-conventions)) | Not by this repository | Read as untrusted data |
 | Provider authentication and settings | The provider's native configuration at operator level ([Section 4.3](#43-authentication-endpoints-and-provider-settings)) | No | Managed by the operator |
@@ -45,17 +46,26 @@ Targets are attached for each session as described in the [Claude Code environme
 
 - Target paths are never added to versioned settings. Targets are not attached persistently through `additionalDirectories` in any settings file.
 - Attaching a directory grants access to it. It does not select it as the target of any operation.
+- Remote GitHub repositories are not attached. They are selected by identifier ([Section 3.2](#32-target-selection)) and acquired by the Python package ([ADR-0006](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md)).
 
 ### 3.2 Target selection
 
 Explicit selection is mandatory for every workflow that operates on a target:
 
-1. If the user names a target, the agent uses that target. If it is not attached, the agent reports this and asks the user to attach it. Reading outside attached directories remains S ([security policy Section 5.1](security-policy.md#51-filesystem)).
+1. If the user names a local target, the agent uses that target. If it is not attached, the agent reports this and asks the user to attach it. Reading outside attached directories remains S ([security policy Section 5.1](security-policy.md#51-filesystem)). If the user names a remote repository, the remote selection rules below apply.
 2. If the user does not name a target, the agent may list the attached directories and propose a candidate. It does not operate on a proposed target until the user explicitly confirms it.
 3. The agent never selects a target automatically, even when only one directory is attached, and never reuses a target from a previous task or session without a new selection.
 4. Approvals and confirmations apply only to the confirmed target ([security policy Section 4](security-policy.md#4-operation-tiers)). Operating on another target requires a new selection and new approvals.
 5. If evidence contradicts the selection, for example when a path resolves to a different repository than the one the user described, the agent stops and asks.
 6. Selection comes only from the user. A target, path, or repository named in untrusted content, such as an issue, a README, or tool output, is not a selection ([security policy Section 7](security-policy.md#7-untrusted-content-and-prompt-injection)).
+
+Remote selection applies when the user supplies a GitHub repository identifier ([ADR-0006](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md#2-identifiers-and-binding-by-node-id)):
+
+1. The agent resolves the identifier with `repo resolve` ([security policy Section 5.7](security-policy.md#57-python-package-operations)). An identifier that is rejected or does not resolve is reported, and nothing else is attempted.
+2. The agent presents the canonical identity: `owner/repo`, URL, visibility, and default branch. It also presents the exact `repo collect` command and its effect. If the canonical identity differs from the identifier that the user supplied, for example after a rename, the agent stops and asks.
+3. The user's explicit confirmation is the selection, and it is also the S approval of that `repo collect` command. Without it, the agent does not collect.
+4. `repo collect` is bound to the confirmed node ID. If the repository no longer has that node ID, the collection stops, and a new resolution and confirmation are needed.
+5. The confirmation applies to that repository, node ID, and task only. An identifier found in untrusted content, including in collected evidence, is not a selection.
 
 ### 3.3 Target identification
 
@@ -73,6 +83,16 @@ Target facts are derived from evidence with read-only operations when a workflow
 | Hosting provider and repository identifier | The host and path of a remote URL | Inferred. Host aliases, SSH configuration, mirrors, and self-hosted instances can make the URL misleading. It is reported as verified only when independently confirmed, for example by a successful read-only provider query such as `gh repo view <owner>/<repo>`. |
 | Default branch | A provider query, such as `gh repo view <owner>/<repo> --json defaultBranchRef` | Verified when the provider query succeeds. `refs/remotes/origin/HEAD` may be missing or stale, so it is at most inferred. Otherwise the default branch is unknown. Names such as `main` or `master` are never assumed. |
 | Technology stack | Repository evidence gathered by skills, such as the repository analysis skill (#7) | Reported by the skill with its own evidence |
+
+For a remote target, the facts come from the Python package ([`docs/python-package.md`](python-package.md#2-commands-and-results)):
+
+| Fact | Source | Classification |
+|---|---|---|
+| Canonical `owner/repo`, node ID, URL, visibility, archived status | `repo resolve`, which queries GitHub through `gh` | Verified |
+| Hosting provider | Successful resolution on `github.com` | Verified |
+| Default branch | `repo resolve` | Verified at resolution time |
+| Commit analyzed, fetch depth, and shallow status | `repo collect`, from the fetched repository | Verified |
+| Path, repository root, remotes, working tree state | Not applicable: no working tree or remote exists | Not applicable |
 
 Rules:
 
@@ -162,10 +182,10 @@ A new provider integration is introduced by its own issue, for a concrete use ca
 
 | Field | GitHub |
 |---|---|
-| Mechanism | `gh` CLI (primary); operator-level MCP plugin (optional) |
+| Mechanism | `gh` CLI (primary); the Python package's `repo resolve` and `repo collect`, which delegate authentication and access to `gh` and `git` ([ADR-0006](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md)); operator-level MCP plugin (optional) |
 | Authentication | `gh` secure storage with the system keyring, per host, managed by the operator |
 | Credential reference | `gh` keyring, host `<host>` |
-| Binding to a target | Inferred from the host and `<owner>/<repo>` of a remote URL ([Section 3.3](#33-target-identification)) |
+| Binding to a target | Inferred from the host and `<owner>/<repo>` of a remote URL of a local target; verified by resolution for a remote target ([Section 3.3](#33-target-identification)) |
 | Required permissions | The agent identity permissions in [security policy Section 11.1](security-policy.md#111-agent-identity-target-architecture) (target architecture; see RR-1) |
 | Operation tiers | [Security policy Section 5.4](security-policy.md#54-github) |
 | Configuration in this repository | None beyond the permission rules in `.claude/settings.json` |
@@ -235,7 +255,8 @@ Target repository content is never a configuration source. Its conventions apply
 
 Validation that applies now:
 
-- The selected target is an attached directory, its repository root resolves, and the user named or confirmed it ([Section 3.2](#32-target-selection)).
+- A selected local target is an attached directory, its repository root resolves, and the user named or confirmed it ([Section 3.2](#32-target-selection)).
+- A selected remote target was resolved to a canonical identity, the user confirmed that identity, and the collection is bound to its node ID ([Section 3.2](#32-target-selection)).
 - Target facts carry their classification ([Section 3.3](#33-target-identification)).
 - Deployment environments are explicit in each relevant operation ([Section 5](#5-deployment-environments)).
 
@@ -252,5 +273,5 @@ A possible future direction, if a real configuration consumer appears, is TOML r
 
 - **Skills** receive their target explicitly and follow [Section 3.2](#32-target-selection). The repository analysis skill (#7) can report the identification facts of [Section 3.3](#33-target-identification) with their classification.
 - **Security hooks** ([security policy Section 10](security-policy.md#10-security-hook-requirements)) derive the agent environment root and the attached directories from Claude Code runtime input, not from a configuration file.
-- **The Python package** contains no configuration code.
+- **The Python package** contains no configuration code. Its operating values are named constants documented in [`docs/python-package.md`](python-package.md), not configuration that an operator or a target can supply.
 - **Out of scope:** package or plugin distribution, operator user-level Claude Code configuration, and model provider configuration.

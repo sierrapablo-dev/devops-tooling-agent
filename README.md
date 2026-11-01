@@ -137,10 +137,14 @@ devops-tooling-agent/
 │   │   ├── 0001-claude-code-as-orchestration-engine.md
 │   │   ├── 0002-python-as-deterministic-integration-layer.md
 │   │   ├── 0003-layered-security-enforcement.md
-│   │   └── 0004-session-scoped-targets-and-native-provider-configuration.md
+│   │   ├── 0004-session-scoped-targets-and-native-provider-configuration.md
+│   │   ├── 0005-claude-code-version-support-and-re-verification.md
+│   │   ├── 0006-remote-repository-acquisition-through-deterministic-collectors.md
+│   │   └── 0007-python-invocation-contract.md
 │   ├── architecture.md
 │   ├── claude-code-environment.md
 │   ├── configuration.md
+│   ├── python-package.md
 │   └── security-policy.md
 ├── src/
 │   └── devops_tooling_agent/
