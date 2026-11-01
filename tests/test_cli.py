@@ -239,3 +239,44 @@ def test_module_invocation_bytes(argv: list[str], exit_code: int, code: str) -> 
     envelope = check_document(completed.stdout)
     assert envelope["error"]["code"] == code
     assert SENTINEL.encode() not in completed.stdout
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals and session kill")
+@pytest.mark.parametrize("signum", ["SIGINT", "SIGTERM"])
+def test_real_interruption_kills_the_child(tmp_path: Path, signum: str) -> None:
+    """A real signal during a gh call yields INTERRUPTED and no surviving child.
+
+    The fake gh is a shell script that records its process ID and sleeps.
+    """
+    import os
+    import time
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    pid_file = tmp_path / "gh.pid"
+    fake = bin_dir / "gh"
+    fake.write_text(f'#!/bin/sh\necho $$ > "{pid_file}"\nexec sleep 60\n', encoding="utf-8")
+    fake.chmod(0o755)
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin"}
+    process = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-I", "-m", "devops_tooling_agent", "repo", "resolve", "o/r"],
+        cwd=ROOT,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    deadline = time.monotonic() + 30
+    while not pid_file.exists() or not pid_file.read_text().strip():
+        assert time.monotonic() < deadline, "the fake gh did not start"
+        time.sleep(0.05)
+    child = int(pid_file.read_text())
+    process.send_signal(getattr(signal, signum))
+    stdout, stderr = process.communicate(timeout=30)
+    assert process.returncode == 130
+    assert stderr == b""
+    envelope = check_document(stdout)
+    assert envelope["error"]["code"] == "INTERRUPTED"
+    assert envelope["error"]["details"] == {"stage": "gh_version"}
+    with pytest.raises(ProcessLookupError):
+        os.kill(child, 0)
