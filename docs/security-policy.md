@@ -177,7 +177,7 @@ Permission rules and hooks see only the package invocation. The `git` and `gh` s
 
 | Operation | Tier | Basis |
 |---|---|---|
-| `repo resolve` | W1 | Its own operations are R: `gh auth status` and `gh repo view` with fixed arguments. Its invocation through `uv run` can synchronize the agent environment, which is W1, as for the quality checks. The most restrictive applicable tier applies. |
+| `repo resolve` | W1 | Its own operations are R: `gh --version`, `gh auth status`, and `gh repo view` with fixed arguments. Its invocation through `uv run` can synchronize the agent environment, which is W1, as for the quality checks. The most restrictive applicable tier applies. |
 | `repo collect <owner>/<repo> --repo-id <node-id>` | S | Lists and writes outside the agent environment, in the system temporary directory |
 | `repo collect --path <path>` | S | Reads outside the agent environment and attached targets, which `blockReadsOutsideWorkingDirectories` does not prevent for a subprocess |
 | `workspace sweep` | S | Lists and reads outside the agent environment |
@@ -189,7 +189,7 @@ That approval covers only these internal operations:
 
 | Internal operation | Tier |
 |---|---|
-| `gh auth status` for `github.com`, and `gh repo view` of the canonical identity | R |
+| `gh --version`, `gh auth status` for `github.com`, and `gh repo view` of the canonical identity | R |
 | Listing workspace names and reading their markers in the system temporary directory | S |
 | Creating the workspace, its marker, and an empty Git global configuration file in it | S |
 | Initializing a bare repository in the workspace, and fetching the default branch into it through the `gh` credential helper | S |
@@ -215,6 +215,7 @@ No internal operation executes target-defined code, changes repository-local con
 5. Git commands receive the repository location explicitly, and their working directory is never inside the repository data.
 6. After a collector-side termination, no descendant process remains, and removal starts only after that holds.
 7. Permitted `gh` commands:
+   - `--version` with no other arguments, to check the minimum version. It is R: it prints the version and exits, reads no credentials, and changes no configuration. It made no network request in verification ([environment Section 8.1.9](claude-code-environment.md#819-package-invocation-and-resolution-outcomes-16)). It is the counterpart of Git's `version`;
    - `auth status` with an explicit host and without options that reveal tokens;
    - `repo view` of an explicit host and repository with a fixed field list;
    - `auth git-credential`, only as Git's credential helper.

@@ -310,6 +310,45 @@ The decisions of #15 that consume each finding:
 | 10. Test fixtures for #17 | An internal protocol parameter for local fixtures that the command-line interface never sets ([ADR-0007 Section 9](adr/0007-python-invocation-contract.md#9-subprocess-runner-seam)) |
 | 11. Clone state after cloning | A bare repository without any remote; `store` is a verification point ([ADR-0006 Sections 4 and 5](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md#5-acquisition-without-a-working-tree)) |
 
+#### 8.1.9 Package invocation and resolution outcomes (#16)
+
+Verified on 2026-11-01 for `repo resolve` (#16) with Claude Code 2.1.316, gh 2.92.0, Git 2.49.0.windows.1, Python 3.13.2, and uv 0.11.19 on Windows 11 Pro 10.0.26300, using the committed `.claude/settings.json`. `gh` is an MSI installation: the real `gh.exe` is in `C:\Program Files\GitHub CLI`, registered as a Windows Installer product, and not a shim. Git was not run by the package.
+
+Method:
+
+- **Invocation form.** A headless session (`claude -p --setting-sources project --permission-prompts none --output-format stream-json --verbose --allowedTools Bash PowerShell`) was started from a clone of the feature branch in the session scratchpad. It ran `uv run --locked python -I -m devops_tooling_agent repo resolve not/a/valid` once in each shell. This identifier is rejected offline, so the probe would have been harmless if it had run.
+- **Editable installation.** The same form was run in the interactive session from this repository, through both shell tools.
+- **`gh` outcomes.**
+  - A probe script ran each `gh` command through the package runner, with the package's allowlisted environment. It recorded exit codes, durations, and the stderr of `gh repo view`. The output of `gh auth status` was never printed.
+  - End-to-end invocations of `repo resolve` covered the same scenarios.
+  - Missing authentication used a verifier-created empty `GH_CONFIG_DIR` in the scratchpad. The operator's `gh` configuration was neither read nor modified.
+  - Network failure used `HTTPS_PROXY` and `https_proxy` set to the unreachable `http://127.0.0.1:9`, as in [Section 8.1.6](#816-configuration-isolation).
+  - Network access by `gh --version` was measured with a local TCP listener set as the HTTPS proxy, which counted incoming connections.
+  - A nonexistent repository was probed under `octocat` with a random name. `octocat/Hello-World` was the public control.
+- All captured output and the stream-json transcript were scanned for GitHub token patterns. The count was 0. No environment value was printed.
+
+| Behavior | Status | Result |
+|---|---|---|
+| Invocation form approval | Verified | Required approval in Bash and in PowerShell. Both calls are listed in `permission_denials` and were denied automatically; no `.venv` was created in the clone. The project `allow` rules were ignored because the clone was not trusted, as in V-10, which does not affect `ask` rules. |
+| `-I` with the editable installation | Verified | The module was imported from the editable installation and wrote a complete envelope through both shell tools: exit code 0, no stderr, and no carriage return in the stdout bytes captured by Bash. |
+| `gh --version` | Verified | Exit 0 in 0.08 seconds. The first line is `gh version 2.92.0 (2026-04-28)`. With the counting proxy, `gh --version` opened 0 connections, and the positive control (`gh repo view` through the same proxy) opened 1. With the unreachable proxy, it still exited 0. With the empty `GH_CONFIG_DIR`, it exited 0 and left the directory empty. Whether `--version` is processed before aliases and extensions was not verified. |
+| `gh auth status --hostname github.com`, authenticated | Verified | Exit 0 under the allowlisted environment, with `GH_TOKEN` and `GITHUB_TOKEN` absent. Authentication came from the OS keyring. |
+| `gh auth status`, missing authentication | Verified | Exit 1. |
+| `gh auth status`, network failure | Verified | Exit 1, the same as missing authentication. **The exit code does not distinguish a network failure from missing authentication**, so `repo resolve` reports `AUTH_REQUIRED` for a network failure at this stage (known limitation, [`docs/python-package.md`](python-package.md#gh-commands)). The output is not parsed ([ADR-0006 Section 4](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md#4-authentication)). |
+| `GH_TOKEN` in the caller's environment | Verified | A fake `GH_TOKEN` with the empty `GH_CONFIG_DIR` gave `AUTH_REQUIRED`: the variable is not passed to `gh`. |
+| `gh repo view github.com/<owner>/<repo>`, public control | Verified | Exit 0. The `HOST/OWNER/REPO` form is accepted. `id` is the legacy node ID form (`MDEwOlJlcG9zaXRvcnk…`), `visibility` is `PUBLIC`, `viewerPermission` is `READ`, `defaultBranchRef` is `{"name": "master"}`, and `diskUsage` is an integer. The JSON was 257 bytes. |
+| `gh repo view`, nonexistent repository | Verified | Exit 1 in 0.46 seconds. stderr: `GraphQL: Could not resolve to a Repository with the name '<owner>/<repo>'. (repository)`. |
+| `gh repo view`, missing authentication | Verified | Exit 4, the documented authentication exit code of `gh`, for both an existing and a nonexistent repository. |
+| `gh repo view`, network failure | Verified | Exit 1. stderr starts with `Post "https://api.github.com/graphql": proxyconnect tcp:`. Classified as `PROVIDER_ERROR`. |
+| `gh repo view`, inaccessible repository | **Not verified** | No existing repository that the account cannot access was available. **Assumption:** the outcome matches the nonexistent case, because GitHub does not reveal private repositories that the viewer cannot access. If it differs, it is reported as `PROVIDER_ERROR`, which fails closed. |
+| End-to-end outcomes | Verified | `NOT_FOUND_OR_INACCESSIBLE` for the nonexistent repository, and `AUTH_REQUIRED` for missing authentication and for the network failure. `USAGE_ERROR` exited with 2, and `INVALID_IDENTIFIER` with `userinfo` did not echo the identifier. Every envelope was complete, without carriage returns or stderr bytes. |
+
+Limitations:
+
+- **Interim process termination on Windows.** Until the Job Object of #17, the runner terminates only the direct child after a timeout or an interruption. This is sufficient for MSI and winget installations, where `gh.exe` is the real program. Scoop and Chocolatey install `gh.exe` as a shim that starts the real binary as a child, and terminating the shim can leave that child running. Only the MSI installation was available.
+- Windows code paths were exercised only with Python 3.13.2. Python 3.12 and 3.14 run in CI on Linux.
+- An empty repository was not available. The empty-repository rows of the default branch matrix ([`docs/python-package.md`](python-package.md#provider-values)) are covered by tests only.
+
 ## 9. Known bypasses and gaps
 
 ### 9.1 Credential access through shell commands
@@ -368,10 +407,13 @@ The following are not established and MUST NOT be relied on:
 | Effect of `gh auth git-credential store` and `erase` | Unverified. `store` is called after a successful clone. Whether `gh` persists anything was not observed. Owner: #17. The method uses a verifier-created `GH_CONFIG_DIR` and never reads the operator's `gh` configuration. If `store` persists anything, #17 uses a helper wrapper that answers only `get` ([ADR-0006](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md#4-authentication)). |
 | GCM with stored credentials for `github.com` | Unverified. GCM had no usable credential in the probes, so whether it would answer without a dialog was not observed. Not relied on: inherited helpers are reset and system configuration is isolated. |
 | Configuration isolation on other Git for Windows installations | Unverified. HTTPS worked under isolation with the `schannel` setting removed on this installation only. Owner: #17. A failure is reported as `PROVIDER_ERROR` without fallback ([security policy Section 5.7.4](security-policy.md#574-subprocess-environment)). |
-| Package invocation form | Unverified. Whether `uv run --locked python -I -m devops_tooling_agent …` requires approval in Bash and PowerShell, and whether `-I` works with the editable installation. Owner: #16 ([ADR-0007](adr/0007-python-invocation-contract.md#1-entry-point-and-invocation-form)). |
-| `gh` outcomes for resolution | Unverified. Exit codes and messages of `gh repo view` and `gh auth status` for a nonexistent repository, an inaccessible repository, a missing authentication, and a network failure. Owner: #16. |
+| `gh repo view` for an inaccessible repository | Unverified. No suitable repository was available ([Section 8.1.9](#819-package-invocation-and-resolution-outcomes-16)). Assumed to match the nonexistent case. Not relied on for safety: a different outcome is reported as `PROVIDER_ERROR`. |
+| Invalid inactive account and `gh auth status` | Unverified. Whether an invalid inactive account on `github.com` changes the exit status of `gh auth status --hostname github.com`, which would make `repo resolve` report `AUTH_REQUIRED` although the active account is valid. Not probed, because it requires signing in to an isolated configuration. |
+| `gh` process termination for shim installations | Unverified, and known to be insufficient in principle. Scoop and Chocolatey install `gh.exe` as a shim, and the interim runner terminates only the direct child on Windows ([Section 8.1.9](#819-package-invocation-and-resolution-outcomes-16)). Owner: #17, with the Job Object. |
+| Default branch of an empty repository | Unverified. No empty repository was available. Whether `gh repo view` reports `defaultBranchRef` as `null` or with an empty name. Both are accepted, and a reported name is `PROVIDER_ERROR` ([`docs/python-package.md`](python-package.md#provider-values)). |
+| `gh` resolution outcomes on Linux and macOS | Unverified. Only Windows was available. CI runs the tests with recorded outcomes on Linux. |
 | Bare repository initialization and fetch | Unverified. Whether `git init --bare --template=` followed by `git fetch` behaves like the verified clone: only `get` and `store` helper calls, no hook or template, object checks and protocol restrictions applied, and no URL, helper, or credential in the repository configuration. Owner: #17. |
-| OS keyring authentication under the allowlisted environment | Unverified. Whether `gh auth status` and the `gh` credential helper authenticate through the OS keyring on Windows with only the variables of [security policy Section 5.7.4](security-policy.md#574-subprocess-environment). [Section 8.1.4](#814-authentication) was verified with the full inherited environment. Owner: #17. |
+| OS keyring authentication under the allowlisted environment | Partially verified. `gh auth status` and `gh repo view` authenticated through the OS keyring on Windows with only the variables of [security policy Section 5.7.4](security-policy.md#574-subprocess-environment) ([Section 8.1.9](#819-package-invocation-and-resolution-outcomes-16)). The `gh` credential helper under that environment remains unverified. [Section 8.1.4](#814-authentication) was verified with the full inherited environment. Owner: #17. |
 | Credential helper with an absolute `gh` path | Unverified. [Section 8.1.4](#814-authentication) verified the helper resolved through `PATH`. Owner: #17. The `PATH` form is the fallback. |
 | Process termination | Unverified. Whether no `git` descendant survives a collector-side termination: a Job Object on Windows and a session kill on POSIX. Owner: #17. |
 | Automatic maintenance | Unverified. Whether `gc.auto=0`, `maintenance.auto=false`, and `--no-auto-maintenance` prevent any detached Git process after the fetch. Owner: #17. |

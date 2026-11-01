@@ -117,6 +117,12 @@ Build the package:
 uv build
 ```
 
+The Python package is invoked as a module from the repository root, and every invocation writes one JSON envelope to standard output. Commands, results, and error codes are documented in [`docs/python-package.md`](docs/python-package.md):
+
+```bash
+uv run --locked python -I -m devops_tooling_agent repo resolve <owner>/<repo>
+```
+
 ## Project structure
 
 ```text
@@ -149,11 +155,29 @@ devops-tooling-agent/
 ├── src/
 │   └── devops_tooling_agent/
 │       ├── __init__.py
-│       └── py.typed
+│       ├── __main__.py
+│       ├── cli.py
+│       ├── constants.py
+│       ├── envelope.py
+│       ├── environment.py
+│       ├── errors.py
+│       ├── gh.py
+│       ├── identifier.py
+│       ├── py.typed
+│       ├── resolve.py
+│       └── runner.py
 ├── tests/
+│   ├── conftest.py
 │   ├── test_claude_settings.py
 │   ├── test_claude_skills.py
-│   └── test_package.py
+│   ├── test_cli.py
+│   ├── test_constants.py
+│   ├── test_environment.py
+│   ├── test_identifier.py
+│   ├── test_invariants.py
+│   ├── test_package.py
+│   ├── test_resolve.py
+│   └── test_runner.py
 ├── .gitattributes
 ├── .gitignore
 ├── .python-version
