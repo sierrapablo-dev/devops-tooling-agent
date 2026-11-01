@@ -68,8 +68,15 @@ USAGE_CASES = [
     ["repo", "resolve", "-x", SENTINEL],
     [SENTINEL],
     ["repo", SENTINEL],
-    ["workspace", "sweep"],
     ["repo", "collect", "a/b"],
+    ["workspace"],
+    ["workspace", "sweep", "extra"],
+    ["workspace", "sweep", "--remove"],
+    ["workspace", "sweep", "--rem", "x"],
+    ["workspace", "sweep", "--remove", "-x"],
+    ["workspace", "sweep", f"--{SENTINEL}"],
+    ["workspace", "sweep", "--remove", "a", "--remove", "b", SENTINEL],
+    ["workspace", "remove", SENTINEL],
     ["repo", "resolve", "--", "a/b", SENTINEL],
     ["@" + SENTINEL],
 ]
@@ -81,16 +88,21 @@ def test_usage_errors(invoke: InvokeFn, capfd: pytest.CaptureFixture[str], argv:
     assert run.exit_code == 2
     envelope = check_document(run.raw)
     assert envelope["status"] == "error"
+    syntax = {
+        "repo resolve": "repo resolve <identifier>",
+        "workspace sweep": "workspace sweep [--remove <workspace-name>]",
+    }
+    expected_command = " ".join(argv[:2]) if " ".join(argv[:2]) in syntax else None
+    expected = syntax[expected_command] if expected_command else " | ".join(syntax.values())
     assert envelope["error"] == {
         "code": "USAGE_ERROR",
         "message": ErrorCode.USAGE_ERROR.message,
-        "details": {"expected": "repo resolve <identifier>"},
+        "details": {"expected": expected},
     }
-    expected_command = "repo resolve" if argv[:2] == ["repo", "resolve"] else None
     assert envelope["command"] == expected_command
     assert SENTINEL.encode() not in run.raw
     for argument in argv:
-        if argument not in {"repo", "resolve"}:
+        if argument not in {"repo", "resolve", "workspace", "sweep"}:
             assert f'"{argument}"'.encode() not in run.raw
     assert run.runner.calls == []
     captured = capfd.readouterr()

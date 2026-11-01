@@ -3,7 +3,7 @@
 Every constant named in the operating value tables of Section 4 is either
 defined in ``devops_tooling_agent.constants`` with the documented value, or
 listed in ``PENDING`` with the issue that introduces it. Every defined constant
-is documented. Section 4.5 has no named constants yet (#17).
+is documented.
 """
 
 import ast
@@ -17,17 +17,6 @@ ROOT = Path(__file__).resolve().parents[1]
 DOC = ROOT / "docs" / "python-package.md"
 
 PENDING = {
-    "COLLECT_TOOL_TIMEOUT_MS": "#17",
-    "COLLECT_DEADLINE_SECONDS": "#17",
-    "CLEANUP_RESERVE_SECONDS": "#17",
-    "REMOVAL_ATTEMPTS": "#17",
-    "REMOVAL_RETRY_DELAY_SECONDS": "#17",
-    "SWEEP_MIN_AGE_SECONDS": "#17",
-    "MAX_REPO_DISK_USAGE_KIB": "#17",
-    "MAX_WORKSPACE_BYTES": "#17",
-    "WORKSPACE_POLL_SECONDS": "#17",
-    "FETCH_DEPTH": "#17",
-    "GIT_MIN_VERSION": "#17",
     "RECENT_COMMITS": "#18",
     "MAX_TREE_ENTRIES": "#18",
     "MAX_INVENTORY_PATHS": "#18",
@@ -92,6 +81,26 @@ def test_time_invariants() -> None:
     assert constants.GH_CALL_TIMEOUT_SECONDS < constants.RESOLVE_DEADLINE_SECONDS
     # Below the default shell tool timeout of 120 seconds.
     assert constants.RESOLVE_DEADLINE_SECONDS < 120
+    # At or below the documented maximum shell tool timeout.
+    assert constants.COLLECT_TOOL_TIMEOUT_MS <= 600000
+    # The internal deadline is below the requested tool timeout, with room for uv.
+    assert constants.COLLECT_DEADLINE_SECONDS * 1000 < constants.COLLECT_TOOL_TIMEOUT_MS
+    # The cleanup reserve covers every removal attempt and the termination wait.
+    removal_budget = constants.REMOVAL_ATTEMPTS * constants.REMOVAL_RETRY_DELAY_SECONDS
+    assert removal_budget + constants.TERMINATION_WAIT_SECONDS < constants.CLEANUP_RESERVE_SECONDS
+    assert constants.CLEANUP_RESERVE_SECONDS < constants.COLLECT_DEADLINE_SECONDS
+    working_time = constants.COLLECT_DEADLINE_SECONDS - constants.CLEANUP_RESERVE_SECONDS
+    assert working_time > constants.GIT_CALL_TIMEOUT_SECONDS
+    # A live collection is never eligible for the sweep.
+    assert constants.SWEEP_MIN_AGE_SECONDS > 10 * constants.COLLECT_DEADLINE_SECONDS
+    assert constants.WORKSPACE_POLL_SECONDS < constants.GIT_CALL_TIMEOUT_SECONDS
+
+
+def test_workspace_invariants() -> None:
+    assert constants.WORKSPACE_SUFFIX_CHARS % 2 == 0
+    assert constants.WORKSPACE_SUFFIX_CHARS >= 32  # at least 128 random bits
+    assert constants.MARKER_MAX_BYTES >= 120
+    assert constants.MAX_WORKSPACE_BYTES <= constants.MAX_REPO_DISK_USAGE_KIB * 1024
 
 
 def test_output_invariants() -> None:

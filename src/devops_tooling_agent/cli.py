@@ -15,19 +15,26 @@ import time
 import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
-from types import FrameType
 from typing import IO, Any, Final, NoReturn
 
+from devops_tooling_agent import interrupts
 from devops_tooling_agent.envelope import failure, serialize, success
 from devops_tooling_agent.errors import EXIT_OK, CommandError, ErrorCode, Interrupted
+from devops_tooling_agent.interrupts import Progress
 from devops_tooling_agent.resolve import COMMAND as RESOLVE_COMMAND
-from devops_tooling_agent.resolve import Progress, resolve
+from devops_tooling_agent.resolve import resolve
 from devops_tooling_agent.runner import Runner
 from devops_tooling_agent.runner import run as run_subprocess
+from devops_tooling_agent.sweep import COMMAND as SWEEP_COMMAND
+from devops_tooling_agent.sweep import sweep
 
 PROG: Final = "devops_tooling_agent"
-# Fixed syntax text. It never contains a received argument.
-EXPECTED_SYNTAX: Final = "repo resolve <identifier>"
+# Fixed syntax texts. They never contain a received argument.
+SYNTAX: Final[Mapping[str, str]] = {
+    RESOLVE_COMMAND: "repo resolve <identifier>",
+    SWEEP_COMMAND: "workspace sweep [--remove <workspace-name>]",
+}
+ANY_SYNTAX: Final = " | ".join(SYNTAX.values())
 WRITE_FAILURE_LINE: Final = (
     "devops-tooling-agent: the envelope could not be written to standard output\n"
 )
@@ -62,10 +69,18 @@ def _new_parser(prog: str) -> _Parser:
 def build_parser() -> _Parser:
     parser = _new_parser(PROG)
     groups = parser.add_subparsers(dest="group", required=True, parser_class=_Parser)
+
     repo = groups.add_parser("repo", add_help=False, allow_abbrev=False)
-    commands = repo.add_subparsers(dest="command", required=True, parser_class=_Parser)
-    resolve_parser = commands.add_parser("resolve", add_help=False, allow_abbrev=False)
+    repo_commands = repo.add_subparsers(dest="command", required=True, parser_class=_Parser)
+    resolve_parser = repo_commands.add_parser("resolve", add_help=False, allow_abbrev=False)
     resolve_parser.add_argument("identifier")
+
+    workspace = groups.add_parser("workspace", add_help=False, allow_abbrev=False)
+    workspace_commands = workspace.add_subparsers(
+        dest="command", required=True, parser_class=_Parser
+    )
+    sweep_parser = workspace_commands.add_parser("sweep", add_help=False, allow_abbrev=False)
+    sweep_parser.add_argument("--remove", metavar="workspace-name", default=None)
     return parser
 
 
@@ -76,20 +91,20 @@ def _parse(argv: Sequence[str]) -> argparse.Namespace | None:
         return None
 
 
+def _identified(argv: Sequence[str]) -> str | None:
+    """The command named by the first two arguments, as a fixed value."""
+    prefix = list(argv[:2])
+    for command in SYNTAX:
+        if prefix == command.split():
+            return command
+    return None
+
+
 class _NullWriter(io.TextIOBase):
     """Replaces ``sys.stderr`` during an invocation, so nothing reaches it."""
 
     def write(self, text: str) -> int:
         return len(text)
-
-
-def _raise_interrupted(signum: int, frame: FrameType | None) -> None:
-    raise Interrupted
-
-
-def _signals() -> list[signal.Signals]:
-    names = ("SIGINT", "SIGTERM")
-    return [getattr(signal, name) for name in names if hasattr(signal, name)]
 
 
 @contextmanager
@@ -103,10 +118,7 @@ def _quiet_invocation() -> Iterator[None]:
         sys.stderr = _NullWriter()
         threading.excepthook = lambda args: None
         try:
-            for signum in _signals():
-                # ValueError outside the main thread; OSError if unsupported.
-                with suppress(ValueError, OSError):
-                    saved_handlers[signum] = signal.signal(signum, _raise_interrupted)
+            saved_handlers = interrupts.install_raising_handlers()
             yield
         finally:
             for signum in saved_handlers:
@@ -131,27 +143,41 @@ def _run_command(
     windows: bool,
     cwd: str | None,
     clock: Callable[[], float],
+    wall_clock: Callable[[], float],
+    sleep: Callable[[float], None],
 ) -> tuple[dict[str, Any], int]:
     command: str | None = None
-    progress = Progress()
+    progress = Progress("validation")
     try:
         working_directory = os.getcwd() if cwd is None else cwd
         namespace = _parse(argv)
         if namespace is None:
-            if list(argv[:2]) == RESOLVE_COMMAND.split():
-                command = RESOLVE_COMMAND
-            usage = CommandError(ErrorCode.USAGE_ERROR, {"expected": EXPECTED_SYNTAX})
+            command = _identified(argv)
+            expected = ANY_SYNTAX if command is None else SYNTAX[command]
+            usage = CommandError(ErrorCode.USAGE_ERROR, {"expected": expected})
             return failure(command, usage), usage.code.exit_code
-        command = RESOLVE_COMMAND
-        result = resolve(
-            namespace.identifier,
-            runner=runner,
-            environ=environ,
-            windows=windows,
-            cwd=working_directory,
-            clock=clock,
-            progress=progress,
-        )
+        if namespace.group == "workspace":
+            command = SWEEP_COMMAND
+            result = sweep(
+                namespace.remove,
+                environ=environ,
+                windows=windows,
+                cwd=working_directory,
+                wall_clock=wall_clock,
+                sleep=sleep,
+                progress=progress,
+            )
+        else:
+            command = RESOLVE_COMMAND
+            result = resolve(
+                namespace.identifier,
+                runner=runner,
+                environ=environ,
+                windows=windows,
+                cwd=working_directory,
+                clock=clock,
+                progress=progress,
+            )
         return success(command, result), EXIT_OK
     except CommandError as error:
         return failure(command, error), error.code.exit_code
@@ -198,11 +224,13 @@ def main(
     windows: bool | None = None,
     cwd: str | None = None,
     clock: Callable[[], float] = time.monotonic,
+    wall_clock: Callable[[], float] = time.time,
+    sleep: Callable[[float], None] = time.sleep,
     stdout: IO[bytes] | None = None,
     stderr: IO[str] | None = None,
 ) -> int:
     """Run one invocation and return its exit code."""
-    saved_handlers = {signum: signal.getsignal(signum) for signum in _signals()}
+    saved_handlers = {signum: signal.getsignal(signum) for signum in interrupts.signals()}
     try:
         try:
             with _quiet_invocation():
@@ -213,6 +241,8 @@ def main(
                     windows=sys.platform == "win32" if windows is None else windows,
                     cwd=cwd,
                     clock=clock,
+                    wall_clock=wall_clock,
+                    sleep=sleep,
                 )
                 command = envelope.get("command")
                 data = serialize(envelope, command if isinstance(command, str) else None)

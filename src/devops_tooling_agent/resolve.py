@@ -8,7 +8,6 @@ command (docs/python-package.md, Section 2.1).
 import json
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
@@ -28,6 +27,7 @@ from devops_tooling_agent.identifier import (
     parse_identifier,
     parse_name_with_owner,
 )
+from devops_tooling_agent.interrupts import Progress
 from devops_tooling_agent.runner import Runner, RunResult
 
 COMMAND: Final = "repo resolve"
@@ -47,13 +47,6 @@ _PERMISSION: Final = {
     "READ": "read",
 }
 _MAX_DISK_USAGE: Final = 2**63 - 1
-
-
-@dataclass
-class Progress:
-    """The current stage, read when the invocation is interrupted."""
-
-    stage: str = STAGE_VALIDATION
 
 
 def valid_branch_name(name: str) -> bool:
