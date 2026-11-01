@@ -11,6 +11,8 @@ This directory records significant architectural decisions of DevOps Tooling Age
 | [0003](0003-layered-security-enforcement.md) | Layered security enforcement | Accepted |
 | [0004](0004-session-scoped-targets-and-native-provider-configuration.md) | Session-scoped targets and native provider configuration | Accepted |
 | [0005](0005-claude-code-version-support-and-re-verification.md) | Claude Code version support and re-verification | Accepted |
+| [0006](0006-remote-repository-acquisition-through-deterministic-collectors.md) | Remote repository acquisition through deterministic collectors | Accepted |
+| [0007](0007-python-invocation-contract.md) | Python invocation contract | Accepted |
 
 ## Conventions
 

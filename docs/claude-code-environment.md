@@ -115,6 +115,7 @@ Only managed settings resist these overrides, and they are not available for the
 2. Before attaching a target, list its `.claude/skills/`, `.claude/commands/`, and `.claude/agents/` directories and report any components found. They load into the session and MUST NOT be invoked. Until hook H-4 exists, add a `Skill(<name>)` or `Agent(<name>)` deny rule for each one to `.claude/settings.local.json` for the session. Use the name under which the session lists the component: a target skill whose name is already taken is listed as `<directory-name>:<skill-name>` ([Section 8](#8-verified-behavior)).
 3. Do not set `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`. Without it, no instruction file of an attached target is loaded (verified).
 4. Git commands in a target need approval: `cd <target> && git …` prompts by Claude Code's built-in behavior, and `git -C <target> …` matches an ask rule.
+5. Remote GitHub repositories are not attached. They are selected by identifier and acquired by the Python package ([configuration Section 3.2](configuration.md#32-target-selection), [ADR-0006](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md)). Package invocations prompt under the `uv` ask rule ([security policy Section 5.7.2](security-policy.md#572-invocation)).
 
 ## 7. Operational friction
 
@@ -154,7 +155,7 @@ Method:
 
 ### 8.1 Remote analysis prerequisites
 
-Verified on 2026-10-31 for the collector-based remote analysis design (#14) with Claude Code 2.1.316, Git 2.49.0.windows.1 with git-lfs 3.6.1, gh 2.92.0, Python 3.13.2, and uv 0.11.19 on Windows 11 Pro 10.0.26300 with PowerShell 7.6.9, using the committed `.claude/settings.json`. No other platform was available. These results record behavior only. They do not decide the acquisition design, which belongs to #15.
+Verified on 2026-10-31 for the collector-based remote analysis design (#14) with Claude Code 2.1.316, Git 2.49.0.windows.1 with git-lfs 3.6.1, gh 2.92.0, Python 3.13.2, and uv 0.11.19 on Windows 11 Pro 10.0.26300 with PowerShell 7.6.9, using the committed `.claude/settings.json`. No other platform was available. These results record behavior only. The decisions that rely on them are recorded in [ADR-0006](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md) and [ADR-0007](adr/0007-python-invocation-contract.md) ([Section 8.1.8](#818-findings-for-the-acquisition-design-15)).
 
 Method:
 
@@ -293,6 +294,22 @@ Each finding is input for #15. None of them is a decision.
 10. **Test fixtures for #17.** A plain local path clone skips `transfer.fsckObjects`, and the protocol restrictions refuse local transports. Tests with local bare repositories need `file://` and an explicit `protocol.file.allow`.
 11. **Clone state after cloning.** The `gh` helper receives `store` after a successful clone. The effect of `store` in `gh` was not observed. `remote.origin.url` remains in the clone configuration until the collector removes it.
 
+The decisions of #15 that consume each finding:
+
+| Finding | Decision |
+|---|---|
+| 1. `core.hooksPath` override | `core.hooksPath` is never set; configuration isolation and an empty template ([ADR-0006 Section 6](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md#6-configuration-isolation-and-hardening)) |
+| 2. Subprocesses are invisible to L2 | Fully determined subprocesses and a closed command list ([security policy Section 5.7.3](security-policy.md#573-subprocess-rules)); RR-14 |
+| 3. Invocation form | Module invocation through `uv run`, without console scripts ([ADR-0007 Section 1](adr/0007-python-invocation-contract.md#1-entry-point-and-invocation-form)); RR-15 |
+| 4. No cleanup on termination | Internal deadline below the requested tool timeout; detection and explicit sweep ([ADR-0006 Section 3](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md#3-single-process-lifecycle)); RR-16 |
+| 5. Orphaned Git processes | No surviving descendant before removal, with the Windows mechanism chosen by #17 ([ADR-0006 Section 7](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md#7-subprocesses-environment-and-process-termination)) |
+| 6. Removal constraints | Read-only handling, bounded retries, and explicit failure. Removing the own workspace is a narrow S entry, and every other removal remains X ([security policy Section 5.1](security-policy.md#51-filesystem), [Section 5.7.5](security-policy.md#575-workspaces)). |
+| 7. Transport constraints | A single line-structured, ASCII envelope on stdout with bounded lines and a total budget ([ADR-0006 Section 9](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md#9-evidence-document-and-transport), [ADR-0007 Section 4](adr/0007-python-invocation-contract.md#4-envelope)); RR-17 |
+| 8. Inherited configuration | Isolation through the subprocess environment for every Git command, and an isolation self-check ([ADR-0006 Section 6](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md#6-configuration-isolation-and-hardening), [security policy Section 5.7.4](security-policy.md#574-subprocess-environment)) |
+| 9. Non-interactive behavior | Fixed non-interactive variables and options, independent of the calling shell ([security policy Section 5.7.4](security-policy.md#574-subprocess-environment)) |
+| 10. Test fixtures for #17 | An internal protocol parameter for local fixtures that the command-line interface never sets ([ADR-0007 Section 9](adr/0007-python-invocation-contract.md#9-subprocess-runner-seam)) |
+| 11. Clone state after cloning | A bare repository without any remote; `store` is a verification point ([ADR-0006 Sections 4 and 5](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md#5-acquisition-without-a-working-tree)) |
+
 ## 9. Known bypasses and gaps
 
 ### 9.1 Credential access through shell commands
@@ -342,15 +359,27 @@ The following are not established and MUST NOT be relied on:
 | Ask prompts and allow rules in interactive sessions under `auto` mode | Unverified. Documented behavior is that explicit ask rules always prompt; headless sessions deny instead of prompting. |
 | `crossSessionInbound: "hold"` at runtime | Unverified. The value is accepted by `claude doctor`. |
 | Impact of `blockReadsOutsideWorkingDirectories` on auto memory | Unverified. Documentation states that files Claude Code needs remain readable. The session scratchpad and saved tool output are readable ([Section 8.1.1](#811-output-handling)). |
-| Commands left running when Claude Code exits | Unverified. Changed in 2.1.316. Relevant to clones left by an interrupted collection ([Section 8.1.2](#812-process-lifecycle)). |
-| Tool timeouts above 600,000 ms | Unverified. A larger value is accepted without error; whether it is clamped was not measured. |
-| `Read` with `allow_large` on files above 256 KB | Unverified. Not exercised, to keep the session context bounded. |
-| Remote analysis prerequisites on Linux and macOS | Unverified. Only Windows was available. Process termination, cleanup, and Git configuration defaults differ by platform. |
-| `shutil.rmtree` behavior on Python 3.12 | Unverified. Only Python 3.13.2 is installed. `onexc` is documented as available from 3.12. |
-| Execution of a hook at the drive root with an empty `core.hooksPath` | Unverified. The resolved path was verified ([Section 8.1.5](#815-clone-hardening)). Execution was not tested, because it requires writing to the drive root. |
-| Effect of `gh auth git-credential store` and `erase` | Unverified. `store` is called after a successful clone. Whether `gh` persists anything was not observed. |
-| GCM with stored credentials for `github.com` | Unverified. GCM had no usable credential in the probes, so whether it would answer without a dialog was not observed. |
-| Configuration isolation on other Git for Windows installations | Unverified. HTTPS worked under isolation with the `schannel` setting removed on this installation only. |
+| Commands left running when Claude Code exits | Unverified. Changed in 2.1.316. Relevant to clones left by an interrupted collection ([Section 8.1.2](#812-process-lifecycle)). Not relied on: a surviving collector ends at its internal deadline and removes its workspace, and a terminated one leaves a workspace for `workspace sweep` ([ADR-0006](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md#3-single-process-lifecycle)). |
+| Tool timeouts above 600,000 ms | Unverified. A larger value is accepted without error; whether it is clamped was not measured. Not relied on: the requested timeout stays at or below 600,000 ms ([`docs/python-package.md`](python-package.md#41-time)). |
+| `Read` with `allow_large` on files above 256 KB | Unverified. Not exercised, to keep the session context bounded. Not relied on: collection results are paginated with `offset` and `limit`. |
+| Remote analysis prerequisites on Linux and macOS | Unverified. Only Windows was available. Process termination, cleanup, and Git configuration defaults differ by platform. Owner: #17, for the lifecycle and sweep tests that CI runs on Linux. macOS remains unverified. |
+| `shutil.rmtree` behavior on Python 3.12 | Unverified. Only Python 3.13.2 is installed. `onexc` is documented as available from 3.12. Owner: #17. |
+| Execution of a hook at the drive root with an empty `core.hooksPath` | Unverified. The resolved path was verified ([Section 8.1.5](#815-clone-hardening)). Execution was not tested, because it requires writing to the drive root. Not relied on: `core.hooksPath` is never set ([ADR-0006](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md#6-configuration-isolation-and-hardening)). |
+| Effect of `gh auth git-credential store` and `erase` | Unverified. `store` is called after a successful clone. Whether `gh` persists anything was not observed. Owner: #17. The method uses a verifier-created `GH_CONFIG_DIR` and never reads the operator's `gh` configuration. If `store` persists anything, #17 uses a helper wrapper that answers only `get` ([ADR-0006](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md#4-authentication)). |
+| GCM with stored credentials for `github.com` | Unverified. GCM had no usable credential in the probes, so whether it would answer without a dialog was not observed. Not relied on: inherited helpers are reset and system configuration is isolated. |
+| Configuration isolation on other Git for Windows installations | Unverified. HTTPS worked under isolation with the `schannel` setting removed on this installation only. Owner: #17. A failure is reported as `PROVIDER_ERROR` without fallback ([security policy Section 5.7.4](security-policy.md#574-subprocess-environment)). |
+| Package invocation form | Unverified. Whether `uv run --locked python -I -m devops_tooling_agent …` requires approval in Bash and PowerShell, and whether `-I` works with the editable installation. Owner: #16 ([ADR-0007](adr/0007-python-invocation-contract.md#1-entry-point-and-invocation-form)). |
+| `gh` outcomes for resolution | Unverified. Exit codes and messages of `gh repo view` and `gh auth status` for a nonexistent repository, an inaccessible repository, a missing authentication, and a network failure. Owner: #16. |
+| Bare repository initialization and fetch | Unverified. Whether `git init --bare --template=` followed by `git fetch` behaves like the verified clone: only `get` and `store` helper calls, no hook or template, object checks and protocol restrictions applied, and no URL, helper, or credential in the repository configuration. Owner: #17. |
+| OS keyring authentication under the allowlisted environment | Unverified. Whether `gh auth status` and the `gh` credential helper authenticate through the OS keyring on Windows with only the variables of [security policy Section 5.7.4](security-policy.md#574-subprocess-environment). [Section 8.1.4](#814-authentication) was verified with the full inherited environment. Owner: #17. |
+| Credential helper with an absolute `gh` path | Unverified. [Section 8.1.4](#814-authentication) verified the helper resolved through `PATH`. Owner: #17. The `PATH` form is the fallback. |
+| Process termination | Unverified. Whether no `git` descendant survives a collector-side termination: a Job Object on Windows and a session kill on POSIX. Owner: #17. |
+| Automatic maintenance | Unverified. Whether `gc.auto=0`, `maintenance.auto=false`, and `--no-auto-maintenance` prevent any detached Git process after the fetch. Owner: #17. |
+| Isolation self-check | Unverified. Whether `git config --list --show-scope` reports only command-line entries under isolation, and fails the check when an inherited variable injects configuration. Owner: #17. |
+| Workspace size limit during the fetch | Unverified. Whether polling the workspace size observes the pack while it is written, so that the fetch can be stopped. Owner: #17. |
+| Workspace privacy on Windows | Unverified. Whether a directory created by the standard library under the user's temporary directory is accessible only to the operator. Owner: #17. |
+| TLS trust variables under isolation | Unverified. Whether Git honors `SSL_CERT_FILE` and `SSL_CERT_DIR` with its TLS backend under isolation. Owner: #17. |
+| Requested tool timeout for package calls | Unverified. Whether a `timeout` of 300,000 ms is honored for `repo collect` in both shell tools. Owner: #19. |
 | Loading of a target's `AGENTS.md` | Unverified. The `InstructionsLoaded` hook does not observe `AGENTS.md`. |
 | Absolute program paths (`/usr/bin/git … push`) | A probe was blocked, but the behavior is undocumented and not relied on. |
 | Model invocation when a target skill reuses a project skill name | Unverified. Both skills are listed to the model with their own descriptions, so a target description could attract model invocation. Invocation was not attempted. |

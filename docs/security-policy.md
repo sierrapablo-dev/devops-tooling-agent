@@ -17,6 +17,7 @@ Responsibilities are divided as follows:
 | Operation tiers, approvals, prohibitions, credential rules | This document | Agent behavior (L1) |
 | Claude Code permission rules and settings ([Section 9](#9-required-claude-code-controls)) | This document | Claude Code project configuration (issue #4) |
 | Security hooks ([Section 10](#10-security-hook-requirements)) | This document | A dedicated security hooks issue |
+| Python package operations, subprocesses, and workspaces ([Section 5.7](#57-python-package-operations)) | This document | The Python package (Remote Repository Analysis issues #16 to #20) |
 | Platform controls ([Section 11](#11-platform-controls)) | This document | Operator-managed GitHub and cloud configuration |
 | Target, provider, and deployment environment configuration; secret references | [`docs/configuration.md`](configuration.md) | Session selection and native provider mechanisms; no configuration files yet |
 
@@ -91,9 +92,11 @@ The catalog applies to every tool that can perform the operation: Bash, PowerShe
 |---|---|
 | R | Reading files in the agent environment and in attached target repositories, except credential locations |
 | W1 | Creating and editing files within the approved scope in the agent environment or an attached target; deleting individual Git-tracked files within scope |
-| S | Reading or writing outside the agent environment and attached targets; editing agent control files (`.claude/**`, `CLAUDE.md`, `.github/workflows/**`, security hooks); reading user-level Claude Code settings |
+| S | Reading or writing outside the agent environment and attached targets; editing agent control files (`.claude/**`, `CLAUDE.md`, `.github/workflows/**`, security hooks); reading user-level Claude Code settings; removing the ephemeral workspace that the same package invocation created ([Section 5.7](#57-python-package-operations)) |
 | X | Recursive deletion; deleting untracked or ignored files; deleting data outside a Git working tree |
 | P | Reading, writing, or copying credential locations ([Section 8.3](#83-credential-locations)); writing credentials to any file |
+
+The S entry for workspace removal covers only a directory that the same invocation created under the system temporary directory, that carries its ownership marker, and that is removed without following links. It is a distinct operation class, not an exception to the X entry: the invocation determines the target itself, no input names it, and the data is a copy that the provider still holds. Every other recursive deletion, including removing workspaces left by other invocations, remains X.
 
 ### 5.2 Shell and code execution
 
@@ -160,11 +163,156 @@ Terraform state files contain secrets in plain text and are credential locations
 - Only MCP servers configured in this repository's reviewed Claude Code configuration, or by the operator at user level, may be used. MCP servers defined by a target repository MUST NOT be enabled.
 - Web search and fetching are R, but their content is untrusted. Requests that send data to an external service are S. Sending repository content, credentials, or personal data to a service that the task does not require is P.
 
+### 5.7 Python package operations
+
+This section classifies the subcommands of the Python package and defines the rules that its subprocesses and workspaces MUST follow:
+
+- The design is recorded in [ADR-0006](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md) and the invocation contract in [ADR-0007](adr/0007-python-invocation-contract.md).
+- Operating values are in [`docs/python-package.md`](python-package.md).
+- Changes to this section are policy amendments. They MUST NOT relax a tier, and a variable added to the environment allowlist MUST be justified as unable to inject configuration or execute code.
+
+Permission rules and hooks see only the package invocation. The `git` and `gh` subprocesses that it starts are not evaluated by them ([environment Section 8.1.3](claude-code-environment.md#813-permission-behavior), RR-14). The rules below are therefore the control for those subprocesses.
+
+#### 5.7.1 Tiers
+
+| Operation | Tier | Basis |
+|---|---|---|
+| `repo resolve` | W1 | Its own operations are R: `gh auth status` and `gh repo view` with fixed arguments. Its invocation through `uv run` can synchronize the agent environment, which is W1, as for the quality checks. The most restrictive applicable tier applies. |
+| `repo collect <owner>/<repo> --repo-id <node-id>` | S | Lists and writes outside the agent environment, in the system temporary directory |
+| `repo collect --path <path>` | S | Reads outside the agent environment and attached targets, which `blockReadsOutsideWorkingDirectories` does not prevent for a subprocess |
+| `workspace sweep` | S | Lists and reads outside the agent environment |
+| `workspace sweep --remove <workspace-name>` | X | Deletes data that another invocation created. Each invocation removes exactly one workspace and is confirmed individually. |
+
+S approval of `repo collect` names the exact command and the confirmed canonical identity. In the remote selection flow, the user's explicit confirmation of the identity, given after the agent presents the exact command and its effect, is that approval ([configuration Section 3.2](configuration.md#32-target-selection)).
+
+That approval covers only these internal operations:
+
+| Internal operation | Tier |
+|---|---|
+| `gh auth status` for `github.com`, and `gh repo view` of the canonical identity | R |
+| Listing workspace names and reading their markers in the system temporary directory | S |
+| Creating the workspace, its marker, and an empty Git global configuration file in it | S |
+| Initializing a bare repository in the workspace, and fetching the default branch into it through the `gh` credential helper | S |
+| Git read commands on that repository | R |
+| Terminating the invocation's own descendant processes | S |
+| Removing the invocation's own workspace ([Section 5.1](#51-filesystem)) | S |
+
+No internal operation executes target-defined code, changes repository-local configuration after creation, or removes data that another invocation created. An internal operation not listed here is a defect, not an approved operation.
+
+#### 5.7.2 Invocation
+
+- The package is invoked only in the form defined by [ADR-0007](adr/0007-python-invocation-contract.md#1-entry-point-and-invocation-form), from the agent environment root.
+- The package defines no console scripts or other executable entry points, because their executables run without approval (RR-15).
+- Package invocations remain under the `uv` ask rule. No `allow` rule and no skill `allowed-tools` entry pre-approves them, whatever their tier.
+- Repository identifiers, node IDs, paths, and workspace names come from the user, or from the result of an earlier package command that the user confirmed. A value found in untrusted content is not an input ([Section 7](#7-untrusted-content-and-prompt-injection)).
+
+#### 5.7.3 Subprocess rules
+
+1. Every argument vector is fully determined by validated inputs and fixed constants. A subcommand never forwards free-form arguments, and no shell or interpreter wrapper is used.
+2. Only `git` and `gh` are executed, plus the process termination mechanism on Windows if it requires a system tool. Executables are resolved once to absolute paths, without searching the current directory.
+3. The environment is built from the allowlist in [Section 5.7.4](#574-subprocess-environment).
+4. Standard input is closed. Output is captured and never forwarded verbatim. No credential value appears in any argument.
+5. Git commands receive the repository location explicitly, and their working directory is never inside the repository data.
+6. After a collector-side termination, no descendant process remains, and removal starts only after that holds.
+7. Permitted `gh` commands:
+   - `auth status` with an explicit host and without options that reveal tokens;
+   - `repo view` of an explicit host and repository with a fixed field list;
+   - `auth git-credential`, only as Git's credential helper.
+
+   `gh auth token`, `gh api`, and every other `gh` command are not used.
+8. Permitted Git commands:
+   - `version`;
+   - `init --bare` with an empty template;
+   - `fetch` of the default branch from the canonical HTTPS URL;
+   - `config --list --show-scope`;
+   - `ls-remote --get-url`;
+   - `rev-parse`, `ls-tree`, `cat-file`, and `log` with `--no-show-signature`.
+
+   No command writes a working tree, changes configuration, pushes, or contacts another URL.
+9. Every Git command passes:
+   - `-c credential.helper=`, and for the fetch, the `gh` credential helper after that reset;
+   - `-c core.askPass=`;
+   - `-c protocol.allow=never` and `-c protocol.https.allow=always`;
+   - `-c transfer.fsckObjects=true`;
+   - `-c gc.auto=0` and `-c maintenance.auto=false`.
+
+   The fetch also passes `--no-tags`, `--no-recurse-submodules`, `--no-auto-maintenance`, and a fixed depth.
+10. `core.hooksPath` is never set ([Section 5.3](#53-git)).
+
+#### 5.7.4 Subprocess environment
+
+The environment of every subprocess is built from scratch.
+
+Variables passed through unchanged when they are set:
+
+| Purpose | Variables |
+|---|---|
+| Process execution | `PATH`, `PATHEXT`, `SYSTEMROOT`, `SYSTEMDRIVE`, `WINDIR`, `COMSPEC` |
+| User profile and OS keyring | `HOME`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `APPDATA`, `LOCALAPPDATA`, `PROGRAMDATA`, `USERNAME`, `USER`, `LOGNAME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS` |
+| Temporary directory | `TMPDIR`, `TEMP`, `TMP` |
+| HTTPS proxy | `HTTPS_PROXY`, `https_proxy`, `NO_PROXY`, `no_proxy` |
+| TLS trust | `SSL_CERT_FILE`, `SSL_CERT_DIR` |
+| `gh` configuration location | `GH_CONFIG_DIR` |
+
+Fixed values:
+
+| Applies to | Variables |
+|---|---|
+| Every subprocess | `GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`, `GIT_ASKPASS` and `SSH_ASKPASS` set to empty values, `GH_PROMPT_DISABLED=1`, `GH_NO_UPDATE_NOTIFIER=1`, `NO_COLOR=1`, `LC_ALL=C` |
+| Git subprocesses | `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL` set to the empty file that the workspace owns, `GIT_ATTR_NOSYSTEM=1`, `GIT_NO_REPLACE_OBJECTS=1`, `GIT_OPTIONAL_LOCKS=0` |
+
+Every other variable is dropped, notably:
+
+- Every `GIT_*` variable that is not a fixed value above, including `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, `GIT_CONFIG_VALUE_<n>`, `GIT_CONFIG_PARAMETERS`, `GIT_SSH_COMMAND`, `GIT_DIR`, `GIT_WORK_TREE`, `GIT_TEMPLATE_DIR`, `GIT_EXEC_PATH`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_TRACE*`, `GIT_SSL_NO_VERIFY`, and `GIT_SSL_CAINFO`.
+- `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GH_HOST`, `GH_REPO`, `GH_DEBUG`, `DEBUG`, `GH_PAGER`, and `PAGER`.
+
+Consequences:
+
+- **Authentication.** Authentication uses only the credential storage of `gh`. An operator who authenticates only through `GH_TOKEN` or `GITHUB_TOKEN` receives `AUTH_REQUIRED`. That the allowlist suffices for OS keyring access on Windows is a verification point owned by #17. A missing variable is added through an amendment of this section.
+- **TLS trust variables.** `SSL_CERT_FILE` and `SSL_CERT_DIR` are passed through, because they only select trusted certificates and `gh` needs them behind a TLS-intercepting proxy. Whether Git honors them depends on its TLS backend and is a verification point owned by #17.
+- **Dropped Git trust settings.** `GIT_SSL_CAINFO` is dropped with every other `GIT_*` variable, and configuration isolation drops `http.sslCAInfo` and `http.sslBackend` from operator configuration. An operator whose Git trusts a private certificate authority only through those settings gets a TLS failure, reported as `PROVIDER_ERROR`. The package fails closed and never falls back to operator configuration. Supporting such an environment requires an amendment of this section.
+
+#### 5.7.5 Workspaces
+
+- A workspace is created by the invocation directly under the system temporary directory, private to the operator, with the workspace prefix, a random name, and an ownership marker created exclusively before any Git command. The collector refuses a temporary directory inside the agent environment.
+- The invocation writes nothing outside its workspace.
+- Removing the invocation's own workspace:
+  - re-validates the marker;
+  - never follows symbolic links or junctions;
+  - handles read-only files;
+  - retries within a bounded budget;
+  - reports failure as `CLEANUP_FAILED`.
+- `repo collect` never removes another workspace. It reports stale workspaces as warnings.
+- A workspace is eligible for `workspace sweep --remove` only when all of the following hold:
+  - it is a real directory directly under the system temporary directory, not a symbolic link, junction, or other reparse point;
+  - its name matches the workspace pattern;
+  - its marker is a valid regular file;
+  - its age, from the marker, is above the sweep minimum age.
+
+  An ineligible workspace is refused, never removed.
+- The X confirmation of `workspace sweep --remove` presents the workspace name, its age, and the effect: permanent deletion of a local copy of repository data. The data remains on the provider.
+
+#### 5.7.6 Local paths
+
+`repo collect --path <path>` is S ([Section 5.7.1](#571-tiers)). Its collection mechanics are decided in #20, under these invariants:
+
+- The path is supplied explicitly by the user. A path from untrusted content is not an input.
+- The collector refuses:
+  - the agent environment and any path inside it;
+  - the user's home directory;
+  - filesystem roots.
+- Credential locations ([Section 8.3](#83-credential-locations)) are never read, and the collector never descends into them. This remains P.
+- Sensitive files are reported by path only.
+- Symbolic links and junctions are never followed.
+- No target-defined code runs, including through the target's Git configuration ([Section 5.3](#53-git)).
+- Nothing is written to the target.
+
 ## 6. Target repositories
 
 ### 6.1 Attachment and access
 
 - Targets are attached explicitly for each session, using `--add-dir` or `/add-dir`, and only when the task requires them.
+- Remote GitHub repositories are not attached. They are selected by identifier ([configuration Section 3.2](configuration.md#32-target-selection)) and acquired only by the Python package as ephemeral workspaces ([Section 5.7](#57-python-package-operations)).
 - Target paths MUST NOT be stored in committed Claude Code configuration. The configuration model for targets, including explicit target selection, is defined in [`docs/configuration.md`](configuration.md#3-project-configuration).
 - Claude Code MUST be started from this repository, never from inside a target repository. When started inside a target, the target's project settings, hooks, MCP servers, and instructions would apply as the session's own project configuration.
 - Access is limited to the attached directories. Reading outside them is S ([Section 5.1](#51-filesystem)).
@@ -279,6 +427,8 @@ Ask rules implement tiers W2, S, and X. The permission prompt is the approval an
 
 The agent environment's quality checks (`uv sync`, `uv run …`, `uv build`) fall under the `uv` ask rule. That rule stays until hook H-5 ensures that commands executing repository-defined code run with the agent environment root as their working directory ([Section 10](#10-security-hook-requirements)). The security hooks issue MAY then move the commands listed in [`CLAUDE.md`](../CLAUDE.md#testing-and-quality), and only those, to `allow`, conditional on H-5.
 
+Python package invocations (`uv run … -m devops_tooling_agent …`) also fall under the `uv` ask rule. They are not quality checks and never move to `allow` ([Section 5.7.2](#572-invocation)).
+
 ### 9.4 Allow rules
 
 Only read-only commands that do not execute repository-defined code are pre-approved:
@@ -301,6 +451,8 @@ The committed configuration, its verified behavior, and its known gaps are docum
 ## 10. Security hook requirements
 
 Security hooks are deterministic `PreToolUse` checks that cover what native permission rules cannot express reliably. They are defense in depth: they reduce the impact of mistakes and prompt injection, but they do not replace platform-level enforcement ([Section 11](#11-platform-controls)).
+
+Hooks see only the tool calls that Claude makes. Processes started by an approved process, such as the `git` and `gh` subprocesses of the Python package, are not visible to hooks or permission rules ([environment Section 8.1.3](claude-code-environment.md#813-permission-behavior)). No hook requirement below covers them. Their control is [Section 5.7](#57-python-package-operations) (RR-14).
 
 General requirements:
 
@@ -387,6 +539,11 @@ Adopting a sandbox requires its own decision record. Only after that may this po
 | RR-11 | Some pushes and remote mutations of protected branches cannot be denied by native rules: pushes without a refspec from the default branch, quoted subcommands, shell wrappers, and REST or GraphQL ref and content updates, which remain ask-only. | Ask rules; GitHub ruleset (L3) | Hooks H-1 to H-3 |
 | RR-12 | `disableBypassPermissionsMode` silently falls back to the configured permission mode instead of rejecting a bypass request, so a refused request is not reported. | Deny and ask rules still apply in the fallback mode | Managed settings |
 | RR-13 | Claude Code patch releases are accepted after a changelog review, without full re-verification ([ADR-0005](adr/0005-claude-code-version-support-and-re-verification.md)). Behavior changes to permission rules, settings, tools, or hooks that the changelog does not describe are not detected until the next full verification. | Changelog review approved by the human maintainer; re-verification of affected rows; full re-verification on minor and major changes; L3 controls | An automated re-verification suite run on every release |
+| RR-14 | Subprocesses of an approved process, such as the `git` and `gh` subprocesses of the Python package, are not evaluated by permission rules or hooks (verified, see [environment Section 8.1.3](claude-code-environment.md#813-permission-behavior)). | Package rules in [Section 5.7](#57-python-package-operations): argument vectors fully determined by validated inputs and constants, no forwarded arguments, environment allowlist, a closed list of permitted commands; tests of argument construction | Operating-system isolation, such as a sandbox ([Section 12](#12-sandbox)) |
+| RR-15 | A console-script executable of a Python environment matches no permission rule and runs without approval (verified, see [environment Section 8.1.3](claude-code-environment.md#813-permission-behavior)). | The package defines no executable entry points, enforced by a test; invocation only through `uv run` under the `uv` ask rule ([ADR-0007](adr/0007-python-invocation-contract.md)) | Hook H-1 recognizing package and environment executables |
+| RR-16 | `TaskStop` and user interrupts terminate a collection without cleanup (verified), leaving a workspace with private repository content in the system temporary directory until the user removes it. Removal is not a secure erase. | Internal deadline; workspaces private to the operator; detection on the next collection; `workspace sweep` with X confirmation | None. Operator disk encryption reduces the impact. |
+| RR-17 | Collection results above the inline output threshold are saved by Claude Code under the user profile, outside the collector's cleanup, and persist like session transcripts. They can contain literal secrets from allowlisted files, because collectors exclude sensitive files by name and do not scan for secrets. | Bounded evidence; sensitive files reported by path only; secret values never reproduced in reports ([Section 8.2](#82-handling)); operator retention of Claude Code data | Secret scanning of collected evidence (out of scope of the Remote Repository Analysis milestone) |
+| RR-18 | A rename or transfer of the confirmed repository, reversed within seconds between the node ID checks and the fetch, is not detected. | Node ID and canonical name checked before and after the fetch ([ADR-0006](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md#2-identifiers-and-binding-by-node-id)) | None. Git cannot fetch by node ID. |
 
 ## 14. Verification
 
