@@ -18,6 +18,9 @@ from contextlib import contextmanager, suppress
 from typing import IO, Any, Final, NoReturn
 
 from devops_tooling_agent import interrupts
+from devops_tooling_agent.collect import COMMAND as COLLECT_COMMAND
+from devops_tooling_agent.collect import UNTRUSTED as COLLECT_UNTRUSTED
+from devops_tooling_agent.collect import collect
 from devops_tooling_agent.envelope import failure, serialize, success
 from devops_tooling_agent.errors import EXIT_OK, CommandError, ErrorCode, Interrupted
 from devops_tooling_agent.interrupts import Progress
@@ -32,6 +35,7 @@ PROG: Final = "devops_tooling_agent"
 # Fixed syntax texts. They never contain a received argument.
 SYNTAX: Final[Mapping[str, str]] = {
     RESOLVE_COMMAND: "repo resolve <identifier>",
+    COLLECT_COMMAND: "repo collect <owner>/<repo> --repo-id <node-id>",
     SWEEP_COMMAND: "workspace sweep [--remove <workspace-name>]",
 }
 ANY_SYNTAX: Final = " | ".join(SYNTAX.values())
@@ -74,6 +78,9 @@ def build_parser() -> _Parser:
     repo_commands = repo.add_subparsers(dest="command", required=True, parser_class=_Parser)
     resolve_parser = repo_commands.add_parser("resolve", add_help=False, allow_abbrev=False)
     resolve_parser.add_argument("identifier")
+    collect_parser = repo_commands.add_parser("collect", add_help=False, allow_abbrev=False)
+    collect_parser.add_argument("repository")
+    collect_parser.add_argument("--repo-id", metavar="node-id", required=True)
 
     workspace = groups.add_parser("workspace", add_help=False, allow_abbrev=False)
     workspace_commands = workspace.add_subparsers(
@@ -148,6 +155,7 @@ def _run_command(
 ) -> tuple[dict[str, Any], int]:
     command: str | None = None
     progress = Progress("validation")
+    warnings: list[dict[str, object]] = []
     try:
         working_directory = os.getcwd() if cwd is None else cwd
         namespace = _parse(argv)
@@ -156,6 +164,7 @@ def _run_command(
             expected = ANY_SYNTAX if command is None else SYNTAX[command]
             usage = CommandError(ErrorCode.USAGE_ERROR, {"expected": expected})
             return failure(command, usage), usage.code.exit_code
+        untrusted: tuple[str, ...] = ()
         if namespace.group == "workspace":
             command = SWEEP_COMMAND
             result = sweep(
@@ -166,6 +175,22 @@ def _run_command(
                 wall_clock=wall_clock,
                 sleep=sleep,
                 progress=progress,
+            )
+        elif namespace.command == "collect":
+            command = COLLECT_COMMAND
+            untrusted = COLLECT_UNTRUSTED
+            result = collect(
+                namespace.repository,
+                namespace.repo_id,
+                runner=runner,
+                environ=environ,
+                windows=windows,
+                cwd=working_directory,
+                clock=clock,
+                progress=progress,
+                warnings=warnings,
+                wall_clock=wall_clock,
+                sleep=sleep,
             )
         else:
             command = RESOLVE_COMMAND
@@ -178,16 +203,16 @@ def _run_command(
                 clock=clock,
                 progress=progress,
             )
-        return success(command, result), EXIT_OK
+        return success(command, result, warnings=warnings, untrusted=untrusted), EXIT_OK
     except CommandError as error:
-        return failure(command, error), error.code.exit_code
+        return failure(command, error, warnings=warnings), error.code.exit_code
     except (Interrupted, KeyboardInterrupt):
         interrupted = CommandError(ErrorCode.INTERRUPTED, {"stage": progress.stage})
-        return failure(command, interrupted), interrupted.code.exit_code
+        return failure(command, interrupted, warnings=warnings), interrupted.code.exit_code
     except Exception:
         # No traceback and no exception text: either could contain an input.
         internal = CommandError(ErrorCode.INTERNAL_ERROR)
-        return failure(command, internal), internal.code.exit_code
+        return failure(command, internal, warnings=warnings), internal.code.exit_code
 
 
 def _write(data: bytes, stdout: IO[bytes] | None, stderr: IO[str] | None) -> bool:

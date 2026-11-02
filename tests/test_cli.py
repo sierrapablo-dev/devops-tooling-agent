@@ -69,6 +69,13 @@ USAGE_CASES = [
     [SENTINEL],
     ["repo", SENTINEL],
     ["repo", "collect", "a/b"],
+    ["repo", "collect"],
+    ["repo", "collect", "--repo-id", "R_x"],
+    ["repo", "collect", "a/b", "--repo-id"],
+    ["repo", "collect", "a/b", "--repo", "R_x"],
+    ["repo", "collect", "a/b", "--repo-id", "R_x", SENTINEL],
+    ["repo", "collect", "--path", SENTINEL],
+    ["repo", "collect", "a/b", "--repo-id", "R_x", "--repo-id", SENTINEL, "extra"],
     ["workspace"],
     ["workspace", "sweep", "extra"],
     ["workspace", "sweep", "--remove"],
@@ -90,6 +97,7 @@ def test_usage_errors(invoke: InvokeFn, capfd: pytest.CaptureFixture[str], argv:
     assert envelope["status"] == "error"
     syntax = {
         "repo resolve": "repo resolve <identifier>",
+        "repo collect": "repo collect <owner>/<repo> --repo-id <node-id>",
         "workspace sweep": "workspace sweep [--remove <workspace-name>]",
     }
     expected_command = " ".join(argv[:2]) if " ".join(argv[:2]) in syntax else None

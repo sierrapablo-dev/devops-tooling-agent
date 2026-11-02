@@ -188,6 +188,18 @@ def parse_identifier(text: str) -> Repository:
     return _parse_short(text)
 
 
+def parse_canonical(text: str) -> Repository:
+    """Validate the canonical ``<owner>/<repo>`` form that ``repo collect`` accepts.
+
+    The reasons of ``parse_identifier`` apply first. Any other accepted form,
+    such as a URL, is then rejected with ``format``.
+    """
+    repository = parse_identifier(text)
+    if text != repository.full_name:
+        raise IdentifierRejected("format")
+    return repository
+
+
 def parse_name_with_owner(text: str) -> Repository | None:
     """Validate a provider-reported ``owner/repo``. Returns ``None`` if invalid."""
     if len(text) > MAX_IDENTIFIER_CHARS or not set(text) <= _ALLOWED:
