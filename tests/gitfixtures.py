@@ -154,3 +154,68 @@ def marker_configuration(base: Path) -> tuple[Path, Path, Path]:
         encoding="utf-8",
     )
     return config, hooks, marker
+
+
+FILE_MODE = "100644"
+EXECUTABLE_MODE = "100755"
+LINK_MODE = "120000"
+SUBMODULE_MODE = "160000"
+
+Entry = tuple[str, bytes, bytes]
+
+
+def make_tree_source(
+    base: Path,
+    entries: list[Entry],
+    *,
+    branch: str = "main",
+    subjects: list[bytes] | None = None,
+    author: tuple[str, str] = ("Fixture", "fixture@example.invalid"),
+    name: str = "tree-source.git",
+) -> Path:
+    """A bare repository built from explicit tree entries, without a working tree.
+
+    Each entry is ``(mode, path, data)``. Paths are raw bytes, so non-UTF-8
+    names, symbolic links (``data`` is the link target), and submodules
+    (``data`` is ignored; the gitlink points to the first blob) are possible.
+    ``subjects`` lists the commit messages from the oldest; every commit has
+    the same tree. Messages are passed on standard input, so their length is
+    not bounded by the command line.
+    """
+    source = base / name
+    git(base, "init", "-q", "--bare", str(source))
+    git_dir = ["--git-dir", str(source)]
+    blobs: dict[bytes, str] = {}
+
+    def blob(data: bytes) -> str:
+        if data not in blobs:
+            blobs[data] = git(base, *git_dir, "hash-object", "-w", "--stdin", input=data)
+        return blobs[data]
+
+    first = blob(b"gitlink\n")
+    index_lines = b""
+    for mode, path, data in entries:
+        object_id = first if mode == SUBMODULE_MODE else blob(data)
+        index_lines += f"{mode} {object_id}\t".encode("ascii") + path + b"\x00"
+    env = fixture_env(base)
+    env["GIT_INDEX_FILE"] = str(base / f"{name}.index")
+    git(base, *git_dir, "update-index", "-z", "--index-info", input=index_lines, env=env)
+    tree = git(base, *git_dir, "write-tree", env=env)
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": author[0],
+            "GIT_AUTHOR_EMAIL": author[1],
+            "GIT_COMMITTER_NAME": author[0],
+            "GIT_COMMITTER_EMAIL": author[1],
+            "GIT_AUTHOR_DATE": "1700000000 +0000",
+            "GIT_COMMITTER_DATE": "1700000000 +0000",
+        }
+    )
+    parent: list[str] = []
+    for subject in subjects or [b"initial"]:
+        commit = git(
+            base, *git_dir, "commit-tree", tree, *parent, "-F", "-", input=subject + b"\n", env=env
+        )
+        parent = ["-p", commit]
+    git(base, *git_dir, "update-ref", f"refs/heads/{branch}", parent[1])
+    return source

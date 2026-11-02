@@ -30,7 +30,7 @@ def escaped_length(char: str) -> int:
     code = ord(char)
     if code < 0x20:
         return 6
-    if code < 0x80:
+    if code < 0x7F:
         return 1
     return 6 if code <= 0xFFFF else 12
 

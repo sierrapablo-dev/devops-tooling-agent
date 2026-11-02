@@ -217,8 +217,9 @@ def survey(listing: Listing) -> Survey:
                 directories = result.agent_directories
                 directories[found.directory] = directories.get(found.directory, 0) + 1
         elif found.entry_class == "excluded":
+            if found.directory is None:
+                raise RuntimeError("an excluded entry always has an excluded directory")
             result.counts["excluded"] += 1
-            assert found.directory is not None
             result.excluded[found.directory] = result.excluded.get(found.directory, 0) + 1
         else:
             result.regular[entry.type].append(entry)
