@@ -21,6 +21,7 @@ def success(
     command: str,
     result: Mapping[str, Any],
     *,
+    warnings: Sequence[Mapping[str, Any]] = (),
     untrusted: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Build an ``ok`` envelope. Keys follow the documented order."""
@@ -32,13 +33,18 @@ def success(
         "status": "ok",
         "result": dict(result),
         "error": None,
-        "warnings": [],
+        "warnings": [dict(warning) for warning in warnings],
         "untrusted": list(untrusted),
         "end": True,
     }
 
 
-def failure(command: str | None, error: CommandError) -> dict[str, Any]:
+def failure(
+    command: str | None,
+    error: CommandError,
+    *,
+    warnings: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
     """Build an ``error`` envelope. Keys follow the documented order."""
     return {
         "schema": SCHEMA,
@@ -52,10 +58,15 @@ def failure(command: str | None, error: CommandError) -> dict[str, Any]:
             "message": error.code.message,
             "details": dict(error.details),
         },
-        "warnings": [],
+        "warnings": [dict(warning) for warning in warnings],
         "untrusted": [],
         "end": True,
     }
+
+
+def serialized_length(envelope: Mapping[str, Any]) -> int:
+    """The length of the serialized envelope, as ``serialize`` writes it."""
+    return len(_serialize_unchecked(envelope))
 
 
 def _serialize_unchecked(envelope: Mapping[str, Any]) -> str:

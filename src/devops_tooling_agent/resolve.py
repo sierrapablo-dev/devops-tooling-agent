@@ -24,6 +24,7 @@ from devops_tooling_agent.errors import CommandError, ErrorCode
 from devops_tooling_agent.identifier import (
     HOST,
     IdentifierRejected,
+    Repository,
     parse_identifier,
     parse_name_with_owner,
 )
@@ -156,6 +157,72 @@ def _environment_error(reason: str) -> CommandError:
     )
 
 
+def valid_node_id(text: str) -> bool:
+    """The repository node ID grammar of docs/python-package.md, Section 2.1."""
+    return _NODE_ID.fullmatch(text) is not None
+
+
+GhCall = Callable[[str, list[str]], RunResult]
+
+
+def gh_caller(
+    runner: Runner,
+    env: Mapping[str, str],
+    workdir: Path,
+    progress: Progress,
+    remaining: Callable[[], float],
+) -> GhCall:
+    """A ``gh`` call bounded by ``GH_CALL_TIMEOUT_SECONDS`` and ``remaining()``."""
+
+    def call(stage: str, argv: list[str]) -> RunResult:
+        progress.stage = stage
+        left = remaining()
+        if left <= 0:
+            raise CommandError(ErrorCode.TIMEOUT, {"stage": stage})
+        result = runner(
+            argv,
+            env=env,
+            cwd=workdir,
+            timeout=min(GH_CALL_TIMEOUT_SECONDS, left),
+            max_output_bytes=GH_MAX_OUTPUT_BYTES,
+        )
+        if result.timed_out:
+            raise CommandError(ErrorCode.TIMEOUT, {"stage": stage})
+        return result
+
+    return call
+
+
+def resolve_gh(env: Mapping[str, str], *, cwd: str, windows: bool) -> Path:
+    executable = resolve_executable("gh", env, cwd=cwd, windows=windows)
+    if executable is None:
+        raise _environment_error("not_found")
+    return executable
+
+
+def check_gh(executable: Path, call: GhCall) -> None:
+    """Check the ``gh`` version and authentication for ``github.com``."""
+    version_result = call(gh.STAGE_VERSION, gh.version_argv(executable))
+    version = gh.parse_version(version_result.stdout) if version_result.exit_code == 0 else None
+    if version is None:
+        raise _environment_error("version_unknown")
+    if version < gh.minimum_version():
+        raise _environment_error("version_unsupported")
+
+    # Only the exit status of gh auth status is used (ADR-0006 Section 4).
+    auth_result = call(gh.STAGE_AUTH_STATUS, gh.auth_status_argv(executable))
+    if auth_result.exit_code != 0:
+        raise CommandError(ErrorCode.AUTH_REQUIRED)
+
+
+def view(executable: Path, repository: Repository, call: GhCall) -> dict[str, Any]:
+    """Resolve the canonical identity with ``gh repo view``."""
+    view_result = call(gh.STAGE_REPO_VIEW, gh.repo_view_argv(executable, repository))
+    if view_result.exit_code != 0:
+        raise gh.classify_repo_view_failure(view_result)
+    return parse_repo_view(view_result)
+
+
 def resolve(
     identifier: str,
     *,
@@ -177,45 +244,12 @@ def resolve(
 
     progress.stage = STAGE_ENVIRONMENT
     env = build_environment(environ, windows=windows)
-    executable = resolve_executable("gh", env, cwd=cwd, windows=windows)
-    if executable is None:
-        raise _environment_error("not_found")
+    executable = resolve_gh(env, cwd=cwd, windows=windows)
     # A neutral working directory: it exists, it is not a repository, and it is
     # never inside the agent environment or target data.
-    workdir: Path = executable.parent
-
-    def call(stage: str, argv: list[str]) -> RunResult:
-        progress.stage = stage
-        remaining = deadline - clock()
-        if remaining <= 0:
-            raise CommandError(ErrorCode.TIMEOUT, {"stage": stage})
-        result = runner(
-            argv,
-            env=env,
-            cwd=workdir,
-            timeout=min(GH_CALL_TIMEOUT_SECONDS, remaining),
-            max_output_bytes=GH_MAX_OUTPUT_BYTES,
-        )
-        if result.timed_out:
-            raise CommandError(ErrorCode.TIMEOUT, {"stage": stage})
-        return result
-
-    version_result = call(gh.STAGE_VERSION, gh.version_argv(executable))
-    version = gh.parse_version(version_result.stdout) if version_result.exit_code == 0 else None
-    if version is None:
-        raise _environment_error("version_unknown")
-    if version < gh.minimum_version():
-        raise _environment_error("version_unsupported")
-
-    # Only the exit status of gh auth status is used (ADR-0006 Section 4).
-    auth_result = call(gh.STAGE_AUTH_STATUS, gh.auth_status_argv(executable))
-    if auth_result.exit_code != 0:
-        raise CommandError(ErrorCode.AUTH_REQUIRED)
-
-    view_result = call(gh.STAGE_REPO_VIEW, gh.repo_view_argv(executable, repository))
-    if view_result.exit_code != 0:
-        raise gh.classify_repo_view_failure(view_result)
-    identity = parse_repo_view(view_result)
+    call = gh_caller(runner, env, executable.parent, progress, lambda: deadline - clock())
+    check_gh(executable, call)
+    identity = view(executable, repository, call)
 
     return {
         "input": repository.full_name,

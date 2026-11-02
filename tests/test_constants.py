@@ -11,23 +11,12 @@ import re
 from pathlib import Path
 
 from devops_tooling_agent import constants
-from devops_tooling_agent.errors import ErrorCode
+from devops_tooling_agent.errors import ErrorCode, WarningCode
 
 ROOT = Path(__file__).resolve().parents[1]
 DOC = ROOT / "docs" / "python-package.md"
 
-PENDING = {
-    "RECENT_COMMITS": "#18",
-    "MAX_TREE_ENTRIES": "#18",
-    "MAX_INVENTORY_PATHS": "#18",
-    "MAX_CONTENT_FILES": "#18",
-    "MAX_FILE_BYTES": "#18",
-    "MAX_FILE_LINES": "#18",
-    "MAX_TOTAL_CONTENT_CHARS": "#18",
-    "MAX_BLOB_BYTES": "#18",
-    "BINARY_SNIFF_BYTES": "#18",
-    "MAX_COMMIT_SUBJECT_CHARS": "#18",
-}
+PENDING: dict[str, str] = {}
 
 _ROW = re.compile(r"^\| `([A-Z][A-Z0-9_]+)` \| `([^`]+)` \|")
 _TABLE_ROW = re.compile(r"^\| `([A-Z_]+)` \|")
@@ -134,3 +123,31 @@ def test_defined_error_codes_match_the_documented_table() -> None:
     for code in ErrorCode:
         assert code.name in documented, code.name
         assert documented[code.name] == list(code.detail_keys), code.name
+
+
+def test_evidence_invariants() -> None:
+    assert constants.RECENT_COMMITS <= constants.FETCH_DEPTH
+    assert constants.MAX_TOTAL_CONTENT_CHARS < constants.MAX_ENVELOPE_CHARS
+    # One bounded blob read serves both the binary check and the content.
+    assert constants.BINARY_SNIFF_BYTES <= constants.MAX_FILE_BYTES
+    assert constants.MAX_FILE_BYTES <= constants.MAX_BLOB_BYTES
+    # 101 fixed bytes of a SHA-256 long record plus 219 bytes of average path.
+    assert constants.MAX_TREE_OUTPUT_BYTES == constants.MAX_TREE_ENTRIES * 320
+    assert constants.MAX_INVENTORY_PATHS <= constants.MAX_TREE_ENTRIES
+    # An extension key line: indentation, quotes, dot, key, count.
+    assert constants.MAX_EXTENSION_CHARS + 40 < constants.MAX_LINE_CHARS
+    assert constants.MAX_EXTENSIONS * 60 < constants.MAX_ENVELOPE_CHARS // 10
+
+
+def test_defined_warning_codes_match_the_documented_table() -> None:
+    text = DOC.read_text(encoding="utf-8")
+    section = _section(text, "\nWarning codes:\n", "\n## ")
+    documented: dict[str, list[str]] = {}
+    for line in section.splitlines():
+        match = _TABLE_ROW.match(line)
+        if match:
+            cell = line.rsplit("|", 2)[1].strip()
+            keys = [_KEY.match(part.strip()) for part in cell.split(";")]
+            assert all(keys), match.group(1)
+            documented[match.group(1)] = [key.group(1) for key in keys if key]
+    assert documented == {code.name: list(code.detail_keys) for code in WarningCode}
