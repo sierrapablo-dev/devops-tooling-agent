@@ -240,7 +240,7 @@ Every error has a fixed `message`. `details` contains only the keys listed here.
 |---|---|---|
 | `USAGE_ERROR` | The arguments do not match the command syntax | `expected`: the syntax of the command |
 | `INVALID_IDENTIFIER` | The repository identifier is not accepted | `reason`: `format`, `scheme`, `host`, `userinfo`, `port`, `query`, `fragment`, `path`, `characters`, or `length` |
-| `INVALID_ARGUMENT` | Another argument is not valid | `argument`: the option name; `reason` |
+| `INVALID_ARGUMENT` | Another argument is not valid | `argument`: the option name; `reason`: `format` |
 | `ENVIRONMENT_ERROR` | A prerequisite is missing or unsupported: `git` or `gh` not found, a version below the minimum, a `gh` path that cannot be quoted for the credential helper, or an unusable temporary directory | `reason`: `not_found`, `version_unsupported`, `version_unknown`, `unsupported_path`, or `temporary_directory`; `tool`: `gh`, `git`, or `null` for `temporary_directory`; `minimum_version`: the documented minimum version of `tool`, or `null` for `temporary_directory` |
 | `AUTH_REQUIRED` | `gh` is not authenticated for `github.com` | None |
 | `NOT_FOUND_OR_INACCESSIBLE` | The repository does not exist or is not accessible | None |
@@ -318,15 +318,17 @@ Each value is an initial value. The invariant it must satisfy is stated with it.
 | Constant | Value | Invariant and rationale |
 |---|---|---|
 | `RECENT_COMMITS` | `20` | At most `FETCH_DEPTH`. Matches the recent activity window of the local-path workflow. |
-| `MAX_TREE_ENTRIES` | `200000` | Tree entries examined. Beyond it, the inventory and counts are reported as truncated. |
-| `MAX_INVENTORY_PATHS` | `1000` | Paths listed individually. Counts by extension cover every examined entry. |
-| `MAX_CONTENT_FILES` | `50` | Allowlisted files whose content is included |
+| `MAX_TREE_ENTRIES` | `200000` | Tree entries examined. Beyond it, the inventory, the counts, and the classification of sensitive files and agent components are reported as covering only the examined entries. |
+| `MAX_INVENTORY_PATHS` | `1000` | Paths or directories listed individually in each path list. Counts cover every examined entry; counts by extension cover the examined regular files outside excluded directories, sensitive files, and agent components. |
+| `MAX_CONTENT_FILES` | `50` | Allowlisted blobs read for content. A binary candidate consumes a read; a blob above `MAX_BLOB_BYTES` does not, because it is never read. |
 | `MAX_FILE_BYTES` | `16384` | Content included per file |
 | `MAX_FILE_LINES` | `300` | Lines included per file |
-| `MAX_TOTAL_CONTENT_CHARS` | `100000` | Serialized content of all files. Below `MAX_ENVELOPE_CHARS`. |
-| `MAX_BLOB_BYTES` | `1048576` | Blobs above this size are not read |
-| `BINARY_SNIFF_BYTES` | `8000` | A NUL byte in this prefix marks a file as binary, as Git does |
+| `MAX_TOTAL_CONTENT_CHARS` | `100000` | Serialized content lines of all files, including indentation, quotes, escapes, separators, and line endings. Below `MAX_ENVELOPE_CHARS`. |
+| `MAX_BLOB_BYTES` | `1048576` | Blobs above this size, from the tree listing, are not read |
+| `BINARY_SNIFF_BYTES` | `8000` | A NUL byte in this prefix marks a file as binary, as Git does. At most `MAX_FILE_BYTES`, so one bounded read serves both. |
 | `MAX_COMMIT_SUBJECT_CHARS` | `200` | Commit subject length before serialization |
+| `MAX_EXTENSIONS` | `200` | Extension keys in the counts by extension, most frequent first. The others are counted together, so the counts stay a small fraction of `MAX_ENVELOPE_CHARS`. |
+| `MAX_EXTENSION_CHARS` | `16` | Longest extension counted under its own key, after the dot. Longer or nonconforming extensions are counted together, so a key always fits a line. |
 
 ### 4.4 Output
 
@@ -374,4 +376,5 @@ Verification used Git 2.49.0 and `gh` 2.92.0 ([environment 8.1](claude-code-envi
 | Constant | Value | Invariant and rationale |
 |---|---|---|
 | `GH_MAX_OUTPUT_BYTES` | `65536` | Captured bytes per stream of each `gh` call. The resolution output is below 1 KB ([environment 8.1.9](claude-code-environment.md#819-package-invocation-and-resolution-outcomes-16)). Output above the bound is discarded and the result is marked as truncated. |
-| `GIT_MAX_OUTPUT_BYTES` | `65536` | Captured bytes per stream of each Git command of the acquisition lifecycle. The isolation self-check prints less than 300 bytes. A truncated self-check output fails the check. |
+| `GIT_MAX_OUTPUT_BYTES` | `65536` | Captured bytes per stream of each Git command of the acquisition lifecycle, and of `rev-parse` and `log` during collection. The isolation self-check prints less than 300 bytes. A truncated self-check output fails the check. |
+| `MAX_TREE_OUTPUT_BYTES` | `64000000` | Captured bytes per stream of the tree listing (`ls-tree`). Equal to `MAX_TREE_ENTRIES` × 320: a long record with a SHA-256 object ID has 101 fixed bytes, plus 219 bytes of average path. A truncated listing is reported, never parsed past its last complete record. |

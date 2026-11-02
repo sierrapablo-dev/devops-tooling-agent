@@ -34,6 +34,7 @@ class ErrorCode(Enum):
     INVALID_IDENTIFIER = _Spec(
         "The repository identifier is not accepted.", ("reason",), EXIT_ERROR
     )
+    INVALID_ARGUMENT = _Spec("An argument is not valid.", ("argument", "reason"), EXIT_ERROR)
     ENVIRONMENT_ERROR = _Spec(
         "A prerequisite is missing or unsupported.",
         ("reason", "tool", "minimum_version"),
@@ -42,6 +43,11 @@ class ErrorCode(Enum):
     AUTH_REQUIRED = _Spec("gh is not authenticated for github.com.", (), EXIT_ERROR)
     NOT_FOUND_OR_INACCESSIBLE = _Spec(
         "The repository does not exist or is not accessible.", (), EXIT_ERROR
+    )
+    REPOSITORY_ID_MISMATCH = _Spec(
+        "The node ID or canonical name differs from the confirmed identity.",
+        ("stage",),
+        EXIT_ERROR,
     )
     UNSUPPORTED_REPOSITORY = _Spec(
         "The repository cannot be handled within scope.", ("reason",), EXIT_ERROR
@@ -76,6 +82,35 @@ class ErrorCode(Enum):
     @property
     def exit_code(self) -> int:
         return self.value.exit_code
+
+
+class WarningCode(Enum):
+    """Warning codes, each with a fixed message and detail keys."""
+
+    STALE_WORKSPACES_DETECTED = _Spec(
+        "Workspaces of other invocations exist under the system temporary directory.",
+        ("count", "names"),
+        EXIT_OK,
+    )
+
+    @property
+    def message(self) -> str:
+        return self.value.message
+
+    @property
+    def detail_keys(self) -> tuple[str, ...]:
+        return self.value.details
+
+
+def warning(code: WarningCode, details: Mapping[str, object]) -> dict[str, object]:
+    """A warning object for the envelope, with keys in the documented order."""
+    if set(details) != set(code.detail_keys):
+        raise ValueError("details do not match the documented keys of the warning code")
+    return {
+        "code": code.name,
+        "message": code.message,
+        "details": {key: details[key] for key in code.detail_keys},
+    }
 
 
 class CommandError(Exception):
