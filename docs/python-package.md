@@ -25,7 +25,7 @@ Change rules:
 - A change that would break an invariant requires a new ADR.
 - The package defines each value as a named constant. This document and the constants are kept equal, and a test introduced with the constants checks the values listed here.
 
-`repo resolve` (#16), `workspace sweep`, and the internal acquisition lifecycle (#17) are implemented. The other commands are introduced by #18 (`repo collect`) and #20 (`repo collect --path`).
+`repo resolve` (#16), `workspace sweep`, the internal acquisition lifecycle (#17), and `repo collect` (#18) are implemented. `repo collect --path` is introduced by #20.
 
 ## 2. Commands and results
 
@@ -37,9 +37,9 @@ Envelope fields common to every command:
 |---|---|
 | `tool` | An object with `name` (`devops-tooling-agent`) and `version` (the package version) |
 | `command` | The command, such as `repo resolve`. For a `USAGE_ERROR`, the command when the parser identified it, otherwise `null`. It is always a fixed value, never a received argument. |
-| `warnings` | Empty for `repo resolve` and `workspace sweep` |
+| `warnings` | Empty for `repo resolve` and `workspace sweep`. `repo collect` reports its warnings in success and error envelopes alike. |
 
-A serialized envelope that would exceed `MAX_LINE_CHARS` on any line or `MAX_ENVELOPE_CHARS` in total is a defect, and is replaced by an `INTERNAL_ERROR` envelope. No `repo resolve` field can be truncated, because every emitted value is bounded by validation.
+A serialized envelope that would exceed `MAX_LINE_CHARS` on any line or `MAX_ENVELOPE_CHARS` in total is a defect, and is replaced by an `INTERNAL_ERROR` envelope. No `repo resolve` field can be truncated, because every emitted value is bounded by validation. `repo collect` holds both bounds by construction ([Section 2.2](#22-repo-collect)): every string is fitted to its serialized line, and the evidence is reduced to the budget before the envelope is written.
 
 ### 2.1 `repo resolve`
 
@@ -141,16 +141,237 @@ Default branch matrix (`isEmpty` against the reported `defaultBranchRef`):
 
 ### 2.2 `repo collect`
 
+`repo collect <owner>/<repo> --repo-id <node-id>` acquires the confirmed repository, collects bounded evidence, removes the workspace, and then writes one envelope. Its tier is S ([security policy Section 5.7.1](security-policy.md#571-tiers)).
+
+#### Arguments
+
+- `<owner>/<repo>` is validated with the identifier rules of [Section 2.1](#identifier-validation), in their order of reasons. Only the canonical form is accepted: an identifier that `repo resolve` accepts but that is not exactly the normalized `<owner>/<repo>`, such as a URL, is rejected as `INVALID_IDENTIFIER` with `format`.
+- `--repo-id` is required and must match the node ID grammar of [Section 2.1](#provider-values). Otherwise the result is `INVALID_ARGUMENT` with `argument` `--repo-id` and `reason` `format`.
+- A rejected value is never reported.
+
+#### Lifecycle
+
+The lifecycle follows [ADR-0006 Section 3](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md#3-single-process-lifecycle):
+
+1. **`validation`**: the arguments, offline.
+2. **`environment`**: the subprocess environment, and the resolution of `gh` and then `git` ([Section 2.4](#24-acquisition-lifecycle-internal)).
+3. **Resolution**:
+   - `gh --version`, `gh auth status`, and `gh repo view`, as in [Section 2.1](#gh-commands).
+   - The reported node ID and canonical name are compared with the arguments, exactly and case-sensitively. A difference is `REPOSITORY_ID_MISMATCH` with `before_acquisition`.
+   - No workspace and no Git command exist at that point.
+4. **`stale_detection`**: workspaces of other invocations are reported with `STALE_WORKSPACES_DETECTED`. They are never removed.
+5. **Acquisition**: the lifecycle of [Section 2.4](#24-acquisition-lifecycle-internal).
+6. **Second binding check**, inside the acquisition lifecycle:
+   - `gh repo view` runs again.
+   - A difference is `REPOSITORY_ID_MISMATCH` with `after_acquisition`. No evidence is collected, and the workspace is removed.
+7. **Collection**: evidence collection, then a final deadline check (stage `collection`).
+8. **Removal and output**: the workspace is removed. Only then is the result assembled, fitted to the budget, and written.
+
+Every `gh` and Git call shares the `COLLECT_DEADLINE_SECONDS` deadline:
+
+- Each call's timeout is the smaller of its per-call bound (`GH_CALL_TIMEOUT_SECONDS` or `GIT_CALL_TIMEOUT_SECONDS`) and the working time. The working time is the remaining time minus `CLEANUP_RESERVE_SECONDS`.
+- Expiry is `TIMEOUT` with the stage of the call. Partial evidence is never returned.
+
+#### Git read commands
+
+Collection uses only the read commands of [security policy Section 5.7.3](security-policy.md#573-subprocess-rules), rule 8, through the acquisition handle. Every vector starts with the fixed options of rule 9 and `--git-dir=<repository>`. The remaining arguments follow these rules:
+
+- Every argument is a constant or an object ID that matches `[0-9a-f]{40}` or `[0-9a-f]{64}`.
+- `<commit>` is the fetched commit of the handle, never `HEAD`.
+- `<blob>` comes from the tree listing.
+- No path controlled by the target is ever an argument.
+
+| Stage | Command | Capture |
+|---|---|---|
+| `git_rev_parse` | `rev-parse --is-shallow-repository` | `GIT_MAX_OUTPUT_BYTES` |
+| `git_ls_tree` | `ls-tree -r -z --long --full-tree --end-of-options <commit>` | `MAX_TREE_OUTPUT_BYTES` |
+| `git_cat_file` | `cat-file --end-of-options blob <blob>`, once per read candidate | `MAX_FILE_BYTES`, which is at least `BINARY_SNIFF_BYTES` |
+| `git_log` | `log --no-show-signature --no-mailmap --no-decorate --no-color --max-count=<RECENT_COMMITS> --format=%H%x00%cI%x00%s%x00 --end-of-options <commit>` | `GIT_MAX_OUTPUT_BYTES` |
+
+- `--no-mailmap` is required: in a bare repository, `mailmap.blob` defaults to `HEAD:.mailmap`, which is target content.
+- No option runs a diff, textconv, or filter driver. `cat-file` never uses `--textconv` or `--filters`.
+- A blob whose listed size exceeds `MAX_BLOB_BYTES` is never read.
+- Every option is available in Git 2.32 (`GIT_MIN_VERSION`).
+- A non-zero exit of any of these commands is `INTERNAL_ERROR`, because the fetched objects already passed the object and connectivity checks.
+
+The tree mode and object type give the entry type. Symbolic links and `other` entries are never read, and link targets are never resolved.
+
+| Mode and object type | Entry type |
+|---|---|
+| `100644` or `100755` with `blob` | `file` |
+| `120000` with `blob` | `symlink` |
+| `160000` with `commit` | `submodule` |
+| Any other combination, such as `040000` or `100664` | `other` |
+
+#### Classification
+
+The package is the source of truth for the pattern lists below ([ADR-0006 Section 11](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md#11-evidence-allowlist-and-collector-sources)). Tests keep the lists equal to the constants of `classify.py`, and keep the sensitive file names and excluded directories equal to [`inspection-guide.md`](../.claude/skills/analyze-repository/inspection-guide.md).
+
+Patterns are matched against the components of a Git path, which are bytes separated by `/`:
+
+- `*` matches any sequence of bytes within one component. No other character is special.
+- A pattern without `/` matches any single component.
+- A pattern with `/` matches consecutive components at any depth. A trailing `/` only documents that the pattern names a directory.
+- A pattern that starts with `/` is anchored: it matches the whole path. Only the allowlist uses anchored patterns.
+- Matching is case-insensitive for ASCII letters only, on the raw bytes.
+- For sensitive files and agent components, each component also matches with its trailing ASCII dots and spaces removed. This fails toward classifying an entry as not readable.
+
+Each entry gets exactly one class. The precedence is sensitive, agent component, excluded directory, then regular:
+
+- Within a class, the shallowest matching component decides.
+- When that component is the last one, the entry itself belongs to the class.
+- Otherwise, the directory up to that component belongs to the class, and every entry below it inherits the class.
+- An excluded directory name never applies to the entry itself.
+
+As a consequence, a file below `.claude/`, `.github/instructions/`, or `.cursor/rules/` is never read.
+
+#### Evidence patterns
+
+| Class | Patterns |
+|---|---|
+| Sensitive files | `.env`, `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `id_ed25519*`, `*.tfstate`, `*.tfstate.backup`, `.terraform/`, `.npmrc`, `.pypirc`, `.netrc`, `_netrc`, `.git-credentials`, `.dockercfg`, `.docker/config.json`, `.ssh/`, `.aws/`, `.kube/`, `kubeconfig`, `*.kubeconfig`, `*.jks`, `*.keystore`, `*.ppk`, `*.ovpn`, `credentials`, `credentials.json`, `service-account*.json`, `*.tfvars`, `*.tfvars.json`, `Pulumi.*.yaml`, `secrets.*`, `*.secrets`, `*vault*.yml`, `*vault*.yaml`, `*.sops.*` |
+| Agent components | `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules`, `.clinerules`, `.mcp.json`, `.github/copilot-instructions.md`, `.claude/`, `.cursor/rules/`, `.github/instructions/` |
+| Excluded directories | `.git`, `node_modules`, `bower_components`, `vendor`, `.venv`, `venv`, `__pycache__`, `.tox`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `dist`, `build`, `out`, `target`, `bin`, `obj`, `.gradle`, `.next`, `.nuxt`, `coverage`, `.terraform`, `.terragrunt-cache`, `.serverless`, `.cache` |
+
+A regular entry of type `file` is a content candidate when it matches the allowlist:
+
+- Anchored patterns match the whole path. The other patterns match the file name.
+- The first matching category, in the order of this table, gives the category.
+
+| Category | Patterns |
+|---|---|
+| `ci` | `/.github/workflows/*.yml`, `/.github/workflows/*.yaml`, `/.gitlab-ci.yml`, `/azure-pipelines.yml`, `/.circleci/config.yml`, `/bitbucket-pipelines.yml`, `/.buildkite/*.yml`, `/.buildkite/*.yaml`, `/.github/dependabot.yml`, `/.github/dependabot.yaml`, `Jenkinsfile`, `cloudbuild.yaml`, `cloudbuild.yml`, `buildspec.yml`, `renovate.json`, `renovate.json5` |
+| `manifest` | `package.json`, `pnpm-workspace.yaml`, `lerna.json`, `nx.json`, `turbo.json`, `pyproject.toml`, `setup.cfg`, `requirements*.txt`, `Pipfile`, `go.mod`, `go.work`, `Cargo.toml`, `rust-toolchain.toml`, `pom.xml`, `build.gradle`, `build.gradle.kts`, `settings.gradle`, `settings.gradle.kts`, `*.csproj`, `*.sln`, `global.json`, `Gemfile`, `composer.json`, `mix.exs`, `.nvmrc`, `.node-version`, `.python-version`, `.tool-versions`, `Makefile`, `justfile`, `Taskfile.yml`, `tox.ini`, `noxfile.py` |
+| `infrastructure` | `*.tf`, `*.tftest.hcl`, `terragrunt.hcl`, `Pulumi.yaml`, `cdk.json`, `*.bicep`, `Chart.yaml`, `kustomization.yaml`, `kustomization.yml`, `serverless.yml`, `fly.toml`, `vercel.json`, `netlify.toml`, `app.yaml`, `Procfile` |
+| `container` | `Dockerfile`, `Dockerfile.*`, `*.Dockerfile`, `Containerfile`, `compose.yml`, `compose.yaml`, `docker-compose*.yml`, `docker-compose*.yaml`, `.dockerignore` |
+| `quality` | `.editorconfig`, `.pre-commit-config.yaml`, `.prettierrc*`, `prettier.config.*`, `.eslintrc*`, `eslint.config.*`, `tsconfig.json`, `ruff.toml`, `.ruff.toml`, `mypy.ini`, `.flake8`, `pytest.ini`, `.coveragerc`, `codecov.yml`, `jest.config.*`, `vitest.config.*`, `playwright.config.*`, `cypress.config.*`, `phpunit.xml`, `.golangci.yml`, `.golangci.yaml`, `rustfmt.toml`, `.rustfmt.toml`, `commitlint.config.*`, `.commitlintrc*`, `release-please-config.json`, `.releaserc*`, `.gitleaks.toml` |
+| `documentation` | `README*`, `CONTRIBUTING*`, `SECURITY*`, `CODEOWNERS`, `/.github/pull_request_template.md` |
+
+Lockfiles, `.gitmodules`, licenses, changelogs, and codes of conduct are deliberately not candidates. They appear in the inventory only.
+
+#### Content selection
+
+Candidates are selected by category round-robin:
+
+- Each category is ordered by literal path depth (the number of `/`), then by the UTF-8 bytes of the path. Root-anchored patterns keep their literal depth.
+- Selection runs in rounds. Each round takes the next candidate of every category, in category order, until `MAX_CONTENT_FILES` blobs have been read or every candidate has been taken.
+- A candidate whose listed size exceeds `MAX_BLOB_BYTES` is skipped without being read and without consuming a read. The next candidate of the same category takes its turn.
+- Every other selected candidate is read once and consumes a read, including a binary one. A file with a NUL byte in its first `BINARY_SNIFF_BYTES` bytes is binary and is never included.
+- Once `MAX_TOTAL_CONTENT_CHARS` is exhausted, the remaining candidates are not read.
+- Included files appear in selection order, which is also the priority order of the budget reduction.
+
+Content handling:
+
+- At most `MAX_FILE_BYTES` bytes are used, and a UTF-8 BOM is removed.
+- Decoding is tolerant UTF-8. A replacement is recorded in `decoding_replaced`. An incomplete sequence at a byte cut is dropped without being recorded.
+- Lines are split at LF, and a CR before the LF is removed. A lone CR stays in its line.
+- At most `MAX_FILE_LINES` lines are included.
+- A line that would exceed `MAX_LINE_CHARS` when serialized is cut, and its index is recorded in `truncated_lines`.
+- `MAX_TOTAL_CONTENT_CHARS` counts the serialized content lines of every file, including indentation, quotes, escapes, separators, and line endings.
+
+#### Result
+
 `result` sections, in this order:
 
 | Section | Content |
 |---|---|
 | `repository` | The fields of `repo resolve` except `input` and `input_matches_canonical`, from the resolution before acquisition |
-| `acquisition` | Fetched commit, fetched reference, fetch depth, and shallow status |
-| `collector` | Limits applied, truncation summary, stale workspaces detected, and cleanup status |
-| `evidence` | Inventory, allowlisted file contents, sensitive file paths, agent component presence, and recent commits |
+| `acquisition` | `commit` (the fetched commit object ID), `reference` (`refs/heads/<default branch>`), `depth` (`FETCH_DEPTH`), and `shallow` (Boolean, from `rev-parse --is-shallow-repository`) |
+| `collector` | See below |
+| `evidence` | See below |
 
-`untrusted` is `["result.evidence"]`. The field-level schema of `evidence` is defined by #18 within the invariants of [ADR-0006 Section 9](adr/0006-remote-repository-acquisition-through-deterministic-collectors.md#9-evidence-document-and-transport) and documented here when it is introduced.
+`collector` keys, in order:
+
+- `limits`: each limit name and its value;
+- `limits_reached`: the names of the limits reached anywhere in the evidence;
+- `reductions`: the sections reduced by the budget, in reduction order;
+- `stale_workspaces`: the number of stale workspaces detected;
+- `cleanup`: `removed`. The random workspace name is not reported on success, so identical invocations produce identical output.
+
+`untrusted` is `["result.evidence"]`:
+
+- Outside `result.evidence`, the result holds only fixed vocabulary, values that pass a strict grammar, and numbers.
+- Error details and warnings never contain target-derived values.
+- Every list of limit names follows the order of `collector.limits`.
+
+Common structures:
+
+- **Path list**, with keys in this order:
+  - `total`: the number of paths;
+  - `listed`: the number of paths in `paths`;
+  - `truncated`: whether `listed` is below `total`;
+  - `truncation`: the limits that shortened the list (`MAX_INVENTORY_PATHS`, `MAX_ENVELOPE_CHARS`);
+  - `paths`: sorted by the bytes of the original Git path, at most `MAX_INVENTORY_PATHS`;
+  - `sizes` (inventory files only): the blob sizes, in the order of `paths`;
+  - `truncated_path_indexes`: the indexes of paths cut to fit their line;
+  - `replaced_path_indexes`: the indexes of paths whose decoding replaced bytes.
+- **Directory list**: `total`, `listed`, `truncated`, `truncation`, and `directories`. Each directory has `path`, `path_truncated`, `path_replaced`, and `entries`, which is the number of examined entries below it.
+
+`evidence` sections, in this order:
+
+| Section | Keys, in order |
+|---|---|
+| `inventory` | `examined_entries`, `unparsed_entries`, `tree_truncated`, `tree_truncation` (`null`, `MAX_TREE_ENTRIES`, or `MAX_TREE_OUTPUT_BYTES`), `counts`, `extensions`, `files` (path list with `sizes`), `symlinks` (path list), `submodules` (path list), and `excluded_directories` (directory list) |
+| `sensitive_files` | `classification_complete`, `classification_truncation`, `files` (path list), and `directories` (directory list) |
+| `agent_components` | The same keys as `sensitive_files`. Directories are reported by path and entry count only, and the paths inside them are never listed. |
+| `contents` | `candidates`, `read`, `included`, `total_chars`, `truncated`, `truncation`, `files`, and `not_included` |
+| `git` | `requested` (`RECENT_COMMITS`), `returned`, `unparsed`, `truncated`, `truncation`, and `recent_commits` |
+
+Section details:
+
+- **`counts`**:
+  - `files`, `symlinks`, `submodules`, and `other` count the regular entries by type.
+  - `sensitive`, `agent_components`, and `excluded` count the entries of those classes.
+  - Together, they cover every parsed entry.
+- **`extensions`**:
+  - `counts` maps an extension to its number of regular files outside excluded directories, sensitive files, and agent components.
+  - The extension is the lowercase suffix from the last dot of the file name. It is counted under its own key only when it matches `\.[a-z0-9_+-]{1,MAX_EXTENSION_CHARS}`.
+  - Keys are ordered by count, highest first, then by bytes. At most `MAX_EXTENSIONS` keys are listed.
+  - `none` counts the files without an extension, including names whose only dot is their first character.
+  - `other` counts the files with a nonconforming extension or with an extension beyond `MAX_EXTENSIONS`.
+  - `truncated` and `truncation` follow.
+- **`classification_complete`**:
+  - It is `false` when the tree listing was truncated or a record could not be parsed. Sensitive files and agent components are then classified only among the examined entries.
+  - `classification_truncation` repeats `tree_truncation`.
+- **`contents`**:
+  - `candidates` counts the allowlisted files, `read` counts the blobs read, and `included` counts the files in `files`.
+  - `total_chars` is the sum of the `content_chars` of the included files.
+  - `truncation` holds the limits that left candidates out: `MAX_BLOB_BYTES`, `MAX_CONTENT_FILES`, `MAX_TOTAL_CONTENT_CHARS`, and `MAX_ENVELOPE_CHARS`.
+  - Each file has these keys, in order: `path`, `path_truncated`, `path_replaced`, `category`, `size`, `decoding_replaced`, `truncated`, `truncation` (`MAX_FILE_BYTES`, `MAX_FILE_LINES`, `MAX_LINE_CHARS`, `MAX_TOTAL_CONTENT_CHARS`), `truncated_lines`, `content_chars`, and `content`, which is an array of lines.
+  - `not_included` has a path list for each reason, in this order: `binary`, `MAX_BLOB_BYTES`, `MAX_CONTENT_FILES`, `MAX_TOTAL_CONTENT_CHARS`, and `MAX_ENVELOPE_CHARS`. The last list counts the files removed by the budget without listing their paths.
+- **`recent_commits`**:
+  - Each commit has `commit`, `date`, `subject`, `subject_truncated`, and `subject_replaced`. `date` is `%cI`, or `null` when it does not match the strict ISO 8601 form.
+  - Subjects are cut to `MAX_COMMIT_SUBJECT_CHARS`, then to their line.
+  - Author and committer names and emails are never collected.
+  - When the `log` capture reaches `GIT_MAX_OUTPUT_BYTES`, a partial last record with a valid commit and date is kept with `subject_truncated`, and `truncation` includes `GIT_MAX_OUTPUT_BYTES`.
+  - `RECENT_COMMITS` appears in `truncation` when the list reached that number, because older history may exist.
+  - Git-side truncation with `%<(N,trunc)` is not used. Its `..` marker and its padding cannot be told apart from subject text, and it counts display columns, not characters.
+
+#### Budget reduction
+
+When the whole envelope, warnings included, would exceed `MAX_ENVELOPE_CHARS`, sections are reduced in this fixed order until it fits:
+
+1. `inventory.files`
+2. `inventory.symlinks`
+3. `inventory.submodules`
+4. `inventory.excluded_directories`
+5. `contents.not_included.binary`
+6. `contents.not_included.MAX_BLOB_BYTES`
+7. `contents.not_included.MAX_CONTENT_FILES`
+8. `contents.not_included.MAX_TOTAL_CONTENT_CHARS`
+9. `contents.files`, from the end of the selection order
+10. `git.recent_commits`
+11. `inventory.extensions`, from the least frequent
+12. `agent_components.files`
+13. `agent_components.directories`
+14. `sensitive_files.files`
+15. `sensitive_files.directories`
+
+Rules:
+
+- Each step keeps the longest prefix of its list that fits, measured on the real serialization. A list that cannot fit even when empty is emptied, and the next step runs.
+- A reduced container gets `truncated` set and `MAX_ENVELOPE_CHARS` added to its `truncation`. The step's name is added to `collector.reductions`, and `MAX_ENVELOPE_CHARS` to `collector.limits_reached`.
+- `repository`, `acquisition`, `collector`, and every count are never reduced. Their worst case is bounded by grammars and constants, and a test shows that it fits a fraction of the budget. The `INTERNAL_ERROR` replacement therefore remains a defect path only.
 
 ### 2.3 `workspace sweep`
 
@@ -255,17 +476,18 @@ Every error has a fixed `message`. `details` contains only the keys listed here.
 | `INTERRUPTED` | `SIGINT` or `SIGTERM` was received and cleanup ran | `stage` |
 | `INTERNAL_ERROR` | An unexpected error | None |
 
-The package defines a code when a command or internal lifecycle that emits it is implemented. `INVALID_ARGUMENT` and `REPOSITORY_ID_MISMATCH` are introduced by #18.
+The package defines a code when a command or internal lifecycle that emits it is implemented.
 
 | Emitter | Codes |
 |---|---|
 | `repo resolve` | `USAGE_ERROR`, `INVALID_IDENTIFIER`, `ENVIRONMENT_ERROR` (`not_found`, `version_unsupported`, `version_unknown` for `gh`), `AUTH_REQUIRED`, `NOT_FOUND_OR_INACCESSIBLE`, `UNSUPPORTED_REPOSITORY` (only `default_branch_name`), `TIMEOUT`, `PROVIDER_ERROR`, `INTERRUPTED`, and `INTERNAL_ERROR` |
 | `workspace sweep` | `USAGE_ERROR`, `ENVIRONMENT_ERROR` (only `temporary_directory`), `WORKSPACE_NOT_ELIGIBLE`, `CLEANUP_FAILED` (with `prior_error` `null`), `INTERRUPTED`, and `INTERNAL_ERROR` |
+| `repo collect` | `USAGE_ERROR`, `INVALID_IDENTIFIER`, `INVALID_ARGUMENT`, `ENVIRONMENT_ERROR` (`not_found`, `version_unsupported`, and `version_unknown` for `gh` and `git`; `unsupported_path` for `gh`; `temporary_directory`), `AUTH_REQUIRED`, `NOT_FOUND_OR_INACCESSIBLE`, `REPOSITORY_ID_MISMATCH`, `UNSUPPORTED_REPOSITORY` (`empty`, `default_branch_name`, `object_check_failed`), `LIMIT_EXCEEDED`, `TIMEOUT`, `PROVIDER_ERROR`, `UNSAFE_ENVIRONMENT`, `CLEANUP_FAILED`, `INTERRUPTED`, and `INTERNAL_ERROR` (also for a failed Git read command after the fetch). Warning: `STALE_WORKSPACES_DETECTED`. |
 | Acquisition lifecycle and Git resolution (for `repo collect`) | `ENVIRONMENT_ERROR` (`not_found`, `version_unknown`, and `version_unsupported` for `git`; `unsupported_path` for `gh`; `temporary_directory`), `UNSUPPORTED_REPOSITORY` (`empty`, `default_branch_name`, `object_check_failed`), `LIMIT_EXCEEDED`, `TIMEOUT`, `PROVIDER_ERROR`, `UNSAFE_ENVIRONMENT`, `CLEANUP_FAILED`, `INTERRUPTED`, and `INTERNAL_ERROR` |
 
 Fixed values:
 
-- `USAGE_ERROR` `expected` is the syntax of the command that the parser identified from the first two arguments: `repo resolve <identifier>` or `workspace sweep [--remove <workspace-name>]`. When no command is identified, it is both, separated by ` | `.
+- `USAGE_ERROR` `expected` is the syntax of the command that the parser identified from the first two arguments: `repo resolve <identifier>`, `repo collect <owner>/<repo> --repo-id <node-id>`, or `workspace sweep [--remove <workspace-name>]`. When no command is identified, it is all three, in this order, separated by ` | `.
 - `stage` values of `repo resolve`:
   - `TIMEOUT` and `PROVIDER_ERROR`: `gh_version`, `gh_auth_status`, or `gh_repo_view`.
   - `INTERRUPTED`: those three, plus `validation` (arguments and identifier), `environment` (environment and executable resolution), and `output` (after the command finished, before the envelope was written).
@@ -275,6 +497,12 @@ Fixed values:
   - `TIMEOUT`: `workspace`, `git_version`, `isolation_check`, `git_init`, `git_fetch`, `git_rev_parse`, and `git_` followed by the read command with `-` replaced by `_` (such as `git_ls_tree`).
   - `PROVIDER_ERROR`: `git_fetch` or `git_rev_parse`.
   - `INTERRUPTED`: those, plus `validation` and `cleanup`.
+- `stage` values of `repo collect`:
+  - `TIMEOUT`: `gh_version`, `gh_auth_status`, `gh_repo_view`, the acquisition stages above, `git_rev_parse`, `git_ls_tree`, `git_cat_file`, `git_log`, and `collection` (the deadline check after collection).
+  - `PROVIDER_ERROR`: `gh_repo_view`, `git_fetch`, or `git_rev_parse`.
+  - `INTERRUPTED`: those, plus `validation`, `environment`, `stale_detection`, `cleanup`, and `output`.
+  - `REPOSITORY_ID_MISMATCH`: `before_acquisition` or `after_acquisition`.
+- `INVALID_ARGUMENT` `argument` is `--repo-id`, and `reason` is `format`.
 - `LIMIT_EXCEEDED` `limit` is the name of the constant: `MAX_REPO_DISK_USAGE_KIB` (`maximum` and `observed` in KiB) or `MAX_WORKSPACE_BYTES` (in bytes).
 - `CLEANUP_FAILED` `prior_error` is the code of the error that was being reported when cleanup failed, `INTERRUPTED` for a signal, `INTERNAL_ERROR` for an unexpected error, or `null`. When termination could not be confirmed after a timeout or an exceeded workspace size, it is `TIMEOUT` or `LIMIT_EXCEEDED`.
 - `PROVIDER_ERROR` with `exit_code` `0` means that `gh` succeeded but its output did not satisfy the provider value rules.
@@ -283,7 +511,7 @@ Warning codes:
 
 | Code | Meaning | `details` |
 |---|---|---|
-| `STALE_WORKSPACES_DETECTED` | Workspaces of other invocations exist under the system temporary directory | `count`; `names` |
+| `STALE_WORKSPACES_DETECTED` | Workspaces of other invocations exist under the system temporary directory | `count`: the number found; `names`: their names, sorted by UTF-8 bytes, at most `MAX_SWEEP_ENTRIES` |
 
 ## 4. Operating values
 

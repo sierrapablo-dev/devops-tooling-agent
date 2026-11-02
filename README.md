@@ -121,9 +121,12 @@ The Python package is invoked as a module from the repository root, and every in
 
 ```bash
 uv run --locked python -I -m devops_tooling_agent repo resolve <owner>/<repo>
+uv run --locked python -I -m devops_tooling_agent repo collect <owner>/<repo> --repo-id <node-id>
 uv run --locked python -I -m devops_tooling_agent workspace sweep
 uv run --locked python -I -m devops_tooling_agent workspace sweep --remove <workspace-name>
 ```
+
+`repo collect` takes the canonical `<owner>/<repo>` and node ID that `repo resolve` reported and the user confirmed. It acquires the repository into an ephemeral workspace in the system temporary directory, collects bounded evidence, removes the workspace, and marks the evidence as untrusted data.
 
 `workspace sweep` lists workspaces that an interrupted invocation left in the system temporary directory. Removing one with `--remove` permanently deletes a local copy of repository data and is confirmed individually ([security policy Section 5.7](docs/security-policy.md#57-python-package-operations)).
 
@@ -161,7 +164,11 @@ devops-tooling-agent/
 │       ├── __init__.py
 │       ├── __main__.py
 │       ├── acquire.py
+│       ├── budget.py
+│       ├── classify.py
 │       ├── cli.py
+│       ├── collect.py
+│       ├── collectors.py
 │       ├── constants.py
 │       ├── envelope.py
 │       ├── environment.py
@@ -174,14 +181,20 @@ devops-tooling-agent/
 │       ├── resolve.py
 │       ├── runner.py
 │       ├── sweep.py
+│       ├── tree.py
 │       └── workspace.py
 ├── tests/
 │   ├── conftest.py
+│   ├── evidencefixtures.py
 │   ├── gitfixtures.py
 │   ├── test_acquire.py
+│   ├── test_budget.py
 │   ├── test_claude_settings.py
 │   ├── test_claude_skills.py
+│   ├── test_classify.py
 │   ├── test_cli.py
+│   ├── test_collect.py
+│   ├── test_collectors.py
 │   ├── test_constants.py
 │   ├── test_environment.py
 │   ├── test_identifier.py
